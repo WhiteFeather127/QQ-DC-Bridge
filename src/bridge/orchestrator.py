@@ -228,10 +228,10 @@ class Orchestrator:
                 if translated is not None:
                     if self._debug:
                         print(f"[DEBUG] 翻译完成 | length={len(translated)}", flush=True)
-                if _normalize_text(translated) == _normalize_text(original_text):
-                    if self._debug:
-                        print(f"[DEBUG] 跳过翻译结果 | 译文与原文相同（规范化后）", flush=True)
-                    translated = None
+                    if _normalize_text(translated) == _normalize_text(original_text):
+                        if self._debug:
+                            print(f"[DEBUG] 跳过翻译结果 | 译文与原文相同（规范化后）", flush=True)
+                        translated = None
             text = f"`{event.author_name}`: {translated}"
             if original_text:
                 text += "\n-# └─ " + original_text.replace("\n", "\n-# ")

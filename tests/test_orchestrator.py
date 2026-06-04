@@ -255,7 +255,7 @@ class TestHandleQQMessage:
         ])
         await orch.handle_qq_message(event)
 
-        mock_translator.translate.assert_awaited_once_with("Hello from QQ")
+        mock_translator.translate.assert_awaited_once_with("Hello from QQ", target_lang="英文")
         args, _ = mock_discord_adapter.send_message.await_args
         segments = args[1]
         assert segments[0].data["text"] == "QQUser："
@@ -287,7 +287,7 @@ class TestHandleQQMessage:
         ])
         await orch.handle_qq_message(event)
 
-        mock_translator.translate.assert_awaited_once_with("Hello from QQ")
+        mock_translator.translate.assert_awaited_once_with("Hello from QQ", target_lang="英文")
         mock_discord_adapter.send_message.assert_awaited_once()
         args, _ = mock_discord_adapter.send_message.await_args
         segments = args[1]
