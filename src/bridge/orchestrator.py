@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+import unicodedata
 from typing import TYPE_CHECKING, Any
 
 from bridge.message_store import MessageStore
@@ -91,6 +92,11 @@ def _build_prefix(platform_tag: str, author_name: str) -> MessageSegment:
 
 def _build_translation_sep(text: str) -> MessageSegment:
     return text_segment(f"\n{'─' * 6} {'翻译'} {'─' * 6}\n{text}")
+
+
+def _normalize_text(text: str) -> str:
+    normalized = unicodedata.normalize('NFKC', text)
+    return ''.join(normalized.split())
 
 
 def _extract_reply_segment(
@@ -208,14 +214,24 @@ class Orchestrator:
         _, original_text = self.translator.extract_text_segments(converted) if self.translator else ("", "")
 
         translated: str | None = None
-        if self.translator and original_text and not self.translator.should_skip(original_text):
-            if self._debug:
-                print(f"[DEBUG] 开始翻译 (QQ→Discord) | {original_text[:40]}...", flush=True)
-            translated = await self.translator.translate(original_text, target_lang="英文")
-            if translated is not None and self._debug:
-                print(f"[DEBUG] 翻译完成 | length={len(translated)}", flush=True)
+        if self.translator and original_text:
+            skip_translation = self.translator.should_skip(original_text)
+            if not skip_translation and "/distrans" in original_text:
+                skip_translation = True
+                if self._debug:
+                    print(f"[DEBUG] 跳过翻译 (QQ→Discord) | /distrans detected", flush=True)
 
-        if translated:
+            if not skip_translation:
+                if self._debug:
+                    print(f"[DEBUG] 开始翻译 (QQ→Discord) | {original_text[:40]}...", flush=True)
+                translated = await self.translator.translate(original_text, target_lang="英文")
+                if translated is not None:
+                    if self._debug:
+                        print(f"[DEBUG] 翻译完成 | length={len(translated)}", flush=True)
+                if _normalize_text(translated) == _normalize_text(original_text):
+                    if self._debug:
+                        print(f"[DEBUG] 跳过翻译结果 | 译文与原文相同（规范化后）", flush=True)
+                    translated = None
             text = f"`{event.author_name}`: {translated}"
             if original_text:
                 text += "\n-# └─ " + original_text.replace("\n", "\n-# ")

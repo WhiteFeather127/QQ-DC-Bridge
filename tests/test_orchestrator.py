@@ -8,7 +8,7 @@ from adapters.base import MessageEvent, PlatformAdapter
 from bridge.orchestrator import DIR_DISCORD_TO_QQ, DIR_QQ_TO_DISCORD, PendingTranslation, Orchestrator
 from bridge.segment.base import MessageSegment
 from bridge.segment.converter import SegmentConverter
-from bridge.segment.types import text_segment
+from bridge.segment.types import at_segment, text_segment
 from bridge.translator import Translator
 from models.config_model import BridgeConfig
 
@@ -135,6 +135,9 @@ class TestHandleQQMessage:
         mock_translator.should_skip.return_value = False
         mock_translator.translate.return_value = "你好"
 
+        mock_translator.should_skip.return_value = False
+        mock_translator.translate.return_value = "你好"
+
         orch = Orchestrator(bridge_config)
         orch.discord_adapter = mock_discord_adapter
         orch.qq_adapter = mock_qq_adapter
@@ -197,6 +200,103 @@ class TestHandleQQMessage:
         assert pending.translated_text is None
 
         mock_discord_adapter.edit_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_distrans_skips_translation_and_sends_original(
+        self,
+        bridge_config: BridgeConfig,
+        mock_discord_adapter: MagicMock,
+        mock_qq_adapter: MagicMock,
+        mock_translator: MagicMock,
+        mock_converter: MagicMock,
+    ) -> None:
+        mock_translator.should_skip.return_value = False
+        mock_qq_adapter.bot_user_id = "12345"
+
+        orch = Orchestrator(bridge_config)
+        orch.discord_adapter = mock_discord_adapter
+        orch.qq_adapter = mock_qq_adapter
+        orch.translator = mock_translator
+        orch.converter = mock_converter
+        orch._discord_channel_id = "dc_channel_1"
+
+        event = make_qq_event(segments=[
+            at_segment(platform="qq", user_id="12345", display="Bot"),
+            text_segment("/distrans Hello"),
+        ])
+        await orch.handle_qq_message(event)
+
+        mock_translator.translate.assert_not_awaited()
+        mock_discord_adapter.send_message.assert_awaited_once()
+        args, _ = mock_discord_adapter.send_message.await_args
+        segments = args[1]
+        assert segments[0].data["text"] == "QQUser："
+        assert segments[1].data["text"] == "/distrans Hello"
+
+    @pytest.mark.asyncio
+    async def test_identical_translation_is_not_output(
+        self,
+        bridge_config: BridgeConfig,
+        mock_discord_adapter: MagicMock,
+        mock_qq_adapter: MagicMock,
+        mock_translator: MagicMock,
+        mock_converter: MagicMock,
+    ) -> None:
+        mock_translator.should_skip.return_value = False
+        mock_translator.translate.return_value = "Hello from QQ"
+        mock_qq_adapter.bot_user_id = "12345"
+
+        orch = Orchestrator(bridge_config)
+        orch.discord_adapter = mock_discord_adapter
+        orch.qq_adapter = mock_qq_adapter
+        orch.translator = mock_translator
+        orch.converter = mock_converter
+        orch._discord_channel_id = "dc_channel_1"
+
+        event = make_qq_event(segments=[
+            at_segment(platform="qq", user_id="12345", display="Bot"),
+            text_segment("Hello from QQ"),
+        ])
+        await orch.handle_qq_message(event)
+
+        mock_translator.translate.assert_awaited_once_with("Hello from QQ")
+        args, _ = mock_discord_adapter.send_message.await_args
+        segments = args[1]
+        assert segments[0].data["text"] == "QQUser："
+        assert segments[1].data["text"] == "Hello from QQ"
+
+    @pytest.mark.asyncio
+    async def test_identical_translation_ignores_unicode_normalization_and_whitespace(
+        self,
+        bridge_config: BridgeConfig,
+        mock_discord_adapter: MagicMock,
+        mock_qq_adapter: MagicMock,
+        mock_translator: MagicMock,
+        mock_converter: MagicMock,
+    ) -> None:
+        mock_translator.should_skip.return_value = False
+        mock_translator.translate.return_value = "Hello　from\nQQ"
+        mock_qq_adapter.bot_user_id = "12345"
+
+        orch = Orchestrator(bridge_config)
+        orch.discord_adapter = mock_discord_adapter
+        orch.qq_adapter = mock_qq_adapter
+        orch.translator = mock_translator
+        orch.converter = mock_converter
+        orch._discord_channel_id = "dc_channel_1"
+
+        event = make_qq_event(segments=[
+            at_segment(platform="qq", user_id="12345", display="Bot"),
+            text_segment("Hello from QQ"),
+        ])
+        await orch.handle_qq_message(event)
+
+        mock_translator.translate.assert_awaited_once_with("Hello from QQ")
+        mock_discord_adapter.send_message.assert_awaited_once()
+        args, _ = mock_discord_adapter.send_message.await_args
+        segments = args[1]
+        assert segments[0].data["text"] == "QQUser："
+        assert segments[1].data["text"] == "Hello from QQ"
 
     @pytest.mark.asyncio
     async def test_no_translator_skips_translation(
