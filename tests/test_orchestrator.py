@@ -134,10 +134,6 @@ class TestHandleQQMessage:
     ) -> None:
         mock_translator.should_skip.return_value = False
         mock_translator.translate.return_value = "你好"
-
-        mock_translator.should_skip.return_value = False
-        mock_translator.translate.return_value = "你好"
-
         orch = Orchestrator(bridge_config)
         orch.discord_adapter = mock_discord_adapter
         orch.qq_adapter = mock_qq_adapter
