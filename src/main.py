@@ -63,15 +63,25 @@ async def main() -> None:
 
     suppress_discord_reconnect_traceback()
 
+    if args.debug and config.discord.debug_channel_id:
+        dc_channel_id = config.discord.debug_channel_id
+    else:
+        dc_channel_id = config.discord.channel_id
+
+    if args.debug and config.qq.debug_group_id:
+        qq_gid = config.qq.debug_group_id
+    else:
+        qq_gid = config.qq.group_id
+
     discord_adapter = DiscordAdapter(
         token=config.discord.token,
-        channel_id=config.discord.channel_id,
+        channel_id=dc_channel_id,
         proxy=config.discord.proxy,
     )
 
     qq_adapter = QQAdapter(
         bot_qq=config.qq.bot_qq,
-        group_id=config.qq.group_id,
+        group_id=qq_gid,
         onebot_ws_url=config.qq.onebot_ws_url,
     )
 
@@ -92,8 +102,8 @@ async def main() -> None:
     await orchestrator.register_adapters(
         discord_adapter=discord_adapter,
         qq_adapter=qq_adapter,
-        discord_channel_id=config.discord.channel_id,
-        qq_group_id=str(config.qq.group_id),
+        discord_channel_id=dc_channel_id,
+        qq_group_id=str(qq_gid),
     )
 
     logger = logging.getLogger("phobos")

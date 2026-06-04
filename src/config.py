@@ -23,12 +23,14 @@ def load_config(config_path: str) -> AppConfig:
     discord_cfg = DiscordConfig(
         token=_env_or("PHOBOS_DISCORD_TOKEN", raw["discord"]["token"]),
         channel_id=str(raw["discord"]["channel_id"]),
+        debug_channel_id=str(raw["discord"]["debug_channel_id"]) if raw["discord"].get("debug_channel_id") else None,
         proxy=raw["discord"].get("proxy", None),
     )
 
     qq_cfg = QQConfig(
         bot_qq=int(_env_or("PHOBOS_QQ_ACCOUNT", str(raw["qq"]["bot_qq"]))),
         group_id=int(raw["qq"]["group_id"]),
+        debug_group_id=int(raw["qq"]["debug_group_id"]) if raw["qq"].get("debug_group_id") else None,
         onebot_ws_url=str(raw["qq"]["onebot_ws_url"]),
     )
 

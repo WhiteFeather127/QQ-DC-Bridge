@@ -6,6 +6,7 @@ class DiscordConfig:
     """Discord 平台连接配置."""
     token: str
     channel_id: str
+    debug_channel_id: str | None = None
     proxy: str | None = None
 
 
@@ -15,6 +16,7 @@ class QQConfig:
     bot_qq: int
     group_id: int
     onebot_ws_url: str
+    debug_group_id: int | None = None
 
 
 @dataclass
