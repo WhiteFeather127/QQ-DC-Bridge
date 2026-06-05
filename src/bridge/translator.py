@@ -49,6 +49,8 @@ class Translator:
         text: str,
         target_lang: str = "中文",
     ) -> str | None:
+        if not text or not text.strip():
+            return None
         cache_key = self._make_cache_key(text, target_lang)
         cached = self._get_cached(cache_key)
         if cached is not None:
@@ -91,11 +93,7 @@ class Translator:
         return result
 
     def should_skip(self, text: str) -> bool:
-        if re.fullmatch(r"https?://\S+", text):
-            return True
-        if text.startswith("```") and text.endswith("```"):
-            return True
-        return False
+        return bool(re.fullmatch(r"https?://\S+", text))
 
     def extract_text_segments(
         self,

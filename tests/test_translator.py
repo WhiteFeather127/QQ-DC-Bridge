@@ -28,32 +28,29 @@ def translator(config: DeepSeekConfig) -> Translator:
 
 
 class TestShouldSkip:
-    def test_short_text_returns_true(self, translator: Translator) -> None:
-        assert translator.should_skip("hi") is True
-
-    def test_nine_chars_returns_true(self, translator: Translator) -> None:
-        assert translator.should_skip("123456789") is True
-
-    def test_ten_chars_returns_false(self, translator: Translator) -> None:
-        assert translator.should_skip("1234567890") is False
-
     def test_pure_http_link_returns_true(self, translator: Translator) -> None:
         assert translator.should_skip("http://example.com/page") is True
 
     def test_pure_https_link_returns_true(self, translator: Translator) -> None:
         assert translator.should_skip("https://example.com/page?q=test&x=1") is True
 
-    def test_pure_code_block_returns_true(self, translator: Translator) -> None:
-        assert translator.should_skip("```print('hello')```") is True
-
-    def test_code_block_with_language_returns_true(self, translator: Translator) -> None:
-        assert translator.should_skip("""```python\nprint("hello")\n```""") is True
-
     def test_normal_text_returns_false(self, translator: Translator) -> None:
         assert translator.should_skip("Hello, how are you doing today?") is False
 
     def test_link_with_extra_text_returns_false(self, translator: Translator) -> None:
         assert translator.should_skip("Check this: https://example.com") is False
+
+    def test_code_word_in_sentence_returns_false(self, translator: Translator) -> None:
+        assert translator.should_skip("I need to import a module but it fails") is False
+
+    def test_short_conversation_returns_false(self, translator: Translator) -> None:
+        assert translator.should_skip("Hi") is False
+
+    def test_chinese_text_returns_false(self, translator: Translator) -> None:
+        assert translator.should_skip("你好，今天天气不错") is False
+
+    def test_markdown_heading_not_code_returns_false(self, translator: Translator) -> None:
+        assert translator.should_skip("## 项目介绍") is False
 
 
 class TestCache:
