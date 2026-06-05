@@ -93,56 +93,7 @@ class Translator:
         return result
 
     def should_skip(self, text: str) -> bool:
-        if re.fullmatch(r"https?://\S+", text):
-            return True
-        if self._is_code_content(text):
-            return True
-        return False
-
-    def _is_code_content(self, text: str) -> bool:
-        """启发式检测消息是否为代码内容"""
-        # 代码块标记
-        if "```" in text:
-            return True
-        # 堆栈跟踪特征
-        if re.search(r'File\s+".*?",\s*line\s+\d+', text):
-            return True
-        if re.search(r'\s+at\s+[\w.]+\(.*?\)', text):
-            return True
-        # 逐行检查代码特征
-        code_line_re = re.compile(
-            r'^\s*('
-            r'(def|class|import|from|return|if|elif|else|for|while|try|except|finally|with|async|await|'
-            r'pass|break|continue|raise|yield|lambda|print|assert|del|global|nonlocal|fn)\b'
-            r'|(public|private|protected|static|void|int|string|bool|float|double|char|var|val|fun|'
-            r'const|let|function|interface|type|enum|record)\b'
-            r'|(using|namespace|include|define|pragma|package|require|module\.exports)\b'
-            r'|(console\.|System\.|std::|fmt::|log\.|logger\.|print\()'
-            r'|@\w+'
-            r'|[\w.]+\(.*\)\s*\{'
-            r'|export\s+(default\s+)?(function|class|const|let|var|interface|type)'
-            r'|\[[\w\s.]+\]'  # INI section header [Section]
-            r')\s*'
-        )
-        lines = text.split('\n')
-        non_empty = [l for l in lines if l.strip()]
-        if not non_empty:
-            return False
-        code_lines = 0
-        for line in non_empty:
-            m = code_line_re.match(line)
-            if not m:
-                continue
-            # 单行文本需要额外验证，避免误判自然语言提问（如 "def 是什么意思？"）
-            if len(non_empty) == 1:
-                remainder = line[m.end():]
-                # 如果剩余部分包含 CJK 字符，很可能是自然语言而非代码
-                if re.search(r'[\u4e00-\u9fff]', remainder):
-                    continue
-            code_lines += 1
-        if len(non_empty) > 1:
-            return code_lines / len(non_empty) > 0.2
-        return code_lines > 0
+        return bool(re.fullmatch(r"https?://\S+", text))
 
     def extract_text_segments(
         self,

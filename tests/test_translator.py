@@ -34,90 +34,11 @@ class TestShouldSkip:
     def test_pure_https_link_returns_true(self, translator: Translator) -> None:
         assert translator.should_skip("https://example.com/page?q=test&x=1") is True
 
-    def test_pure_code_block_returns_true(self, translator: Translator) -> None:
-        assert translator.should_skip("```print('hello')```") is True
-
-    def test_code_block_with_language_returns_true(self, translator: Translator) -> None:
-        assert translator.should_skip("""```python\nprint("hello")\n```""") is True
-
     def test_normal_text_returns_false(self, translator: Translator) -> None:
         assert translator.should_skip("Hello, how are you doing today?") is False
 
     def test_link_with_extra_text_returns_false(self, translator: Translator) -> None:
         assert translator.should_skip("Check this: https://example.com") is False
-
-    def test_python_stack_trace_returns_true(self, translator: Translator) -> None:
-        trace = '''Traceback (most recent call last):
-  File "main.py", line 10, in <module>
-    print(1/0)
-ZeroDivisionError: division by zero'''
-        assert translator.should_skip(trace) is True
-
-    def test_java_stack_trace_returns_true(self, translator: Translator) -> None:
-        trace = '''java.lang.NullPointerException
-        at com.example.MyClass.myMethod(MyClass.java:42)
-        at com.example.Main.main(Main.java:10)'''
-        assert translator.should_skip(trace) is True
-
-    def test_multi_line_code_snippet_returns_true(self, translator: Translator) -> None:
-        code = '''def hello(name):
-    print(f"Hello {name}")
-    return name.upper()'''
-        assert translator.should_skip(code) is True
-
-    def test_class_definition_returns_true(self, translator: Translator) -> None:
-        code = '''class Person:
-    def __init__(self, name):
-        self.name = name'''
-        assert translator.should_skip(code) is True
-
-    def test_import_statements_returns_true(self, translator: Translator) -> None:
-        code = '''import os
-import sys
-from typing import Optional'''
-        assert translator.should_skip(code) is True
-
-    def test_js_arrow_function_returns_true(self, translator: Translator) -> None:
-        code = '''const add = (a, b) => {
-    return a + b;
-}'''
-        assert translator.should_skip(code) is True
-
-    def test_config_code_returns_true(self, translator: Translator) -> None:
-        code = '''module.exports = {
-    port: 3000,
-    host: "localhost"
-}'''
-        assert translator.should_skip(code) is True
-
-    def test_rust_function_returns_true(self, translator: Translator) -> None:
-        code = '''fn main() {
-    println!("Hello");
-}'''
-        assert translator.should_skip(code) is True
-
-    def test_ini_config_simple_returns_true(self, translator: Translator) -> None:
-        code = "[General]\nhost = 127.0.0.1\nport = 8080"
-        assert translator.should_skip(code) is True
-
-    def test_ini_config_with_comments_returns_true(self, translator: Translator) -> None:
-        code = "; MySQL config\n[Database]\nhost = localhost\nuser = root"
-        assert translator.should_skip(code) is True
-
-    def test_ini_section_in_chat_returns_false(self, translator: Translator) -> None:
-        assert translator.should_skip("I was looking at the [General] section") is False
-
-    def test_ini_section_in_chinese_chat_returns_false(self, translator: Translator) -> None:
-        assert translator.should_skip("这个 [Database] 配置在哪里？") is False
-
-    def test_inline_code_with_backticks_returns_true(self, translator: Translator) -> None:
-        assert translator.should_skip("```python\nx = 1\n```") is True
-
-    def test_single_line_code_keyword_returns_true(self, translator: Translator) -> None:
-        assert translator.should_skip("print('hello world')") is True
-
-    def test_conversational_text_returns_false(self, translator: Translator) -> None:
-        assert translator.should_skip("def 是什么意思？") is False
 
     def test_code_word_in_sentence_returns_false(self, translator: Translator) -> None:
         assert translator.should_skip("I need to import a module but it fails") is False
