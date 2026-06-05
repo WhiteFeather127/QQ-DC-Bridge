@@ -17,6 +17,7 @@ class QQConfig:
     group_id: int
     onebot_ws_url: str
     debug_group_id: int | None = None
+    proxy: str | None = None
 
 
 @dataclass

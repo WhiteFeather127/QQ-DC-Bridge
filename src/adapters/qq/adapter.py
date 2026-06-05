@@ -16,6 +16,7 @@ from adapters.qq.segment_builder import build_cq_code
 from adapters.qq.segment_parser import parse_cq_code, parse_onebot_array
 from bridge.segment.base import MessageSegment
 from bridge.segment.types import SEGMENT_IMAGE
+from bridge.segment.types import text_segment as _text_seg
 from utils.ratelimit import RateLimiter
 
 logger = logging.getLogger(__name__)
@@ -28,11 +29,13 @@ class QQAdapter(PlatformAdapter):
         group_id: int,
         onebot_ws_url: str,
         qq_rate_limit: float = 1.0,
+        proxy: str | None = None,
     ) -> None:
         super().__init__()
         self._bot_qq = bot_qq
         self._group_id = group_id
         self._ws_url = onebot_ws_url
+        self._proxy = proxy
         self._rate_limiter = RateLimiter(interval=qq_rate_limit, burst=3)
 
         self._ws: websockets.WebSocketClientProtocol | None = None
@@ -100,8 +103,17 @@ class QQAdapter(PlatformAdapter):
             )
             if result is None:
                 return None
-            data = result.get("data", {}) if isinstance(result, dict) else {}
+            # OneBot 可能在图片 URL 解析失败时返回 retcode=1200 且 data=null
+            raw_data = result.get("data") if isinstance(result, dict) else None
+            data = raw_data if isinstance(raw_data, dict) else {}
             message_id = data.get("message_id")
+            if message_id is None:
+                retcode = result.get("retcode") if isinstance(result, dict) else "?"
+                logger.warning(
+                    "send_group_msg returned no message_id (retcode=%s, data=%s)",
+                    retcode,
+                    raw_data,
+                )
             return str(message_id) if message_id is not None else None
         except Exception:
             logger.exception("Failed to send QQ group message")
@@ -142,17 +154,60 @@ class QQAdapter(PlatformAdapter):
                             type=SEGMENT_IMAGE,
                             data={"file": f"base64://{b64}"},
                         )
+                    else:
+                        # 下载失败时不要传原始 URL 给 OneBot（CQ 码解析器会截断含 - 的 URL
+                        # 导致 retcode=1200），改用 [图片] 文本占位
+                        logger.warning(
+                            "Image download failed, using text placeholder: %s",
+                            file_str[:80],
+                        )
+                        seg = _text_seg("[图片]")
             processed.append(seg)
         return processed
 
     async def _download_image_as_base64(self, url: str) -> str | None:
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    return base64.b64encode(resp.content).decode()
-        except Exception:
-            logger.warning("Failed to download image: %s", url[:80])
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://multimedia.nt.qq.com.cn/",
+        }
+        client_kwargs: dict[str, Any] = {
+            "timeout": 15.0,
+            "follow_redirects": True,
+            "headers": headers,
+        }
+        proxy = self._proxy
+        if proxy:
+            client_kwargs["proxy"] = proxy
+
+        last_error: Exception | None = None
+        for attempt in range(2):
+            if attempt == 1 and proxy:
+                logger.debug("Image download retrying without proxy: %s", url[:80])
+                del client_kwargs["proxy"]
+            try:
+                async with httpx.AsyncClient(**client_kwargs) as client:
+                    resp = await client.get(url)
+                    if resp.status_code == 200:
+                        return base64.b64encode(resp.content).decode()
+                    logger.warning(
+                        "Image download failed (HTTP %d): %s",
+                        resp.status_code,
+                        url[:80],
+                    )
+                    return None
+            except httpx.ProxyError as e:
+                logger.warning("Image download proxy error, retrying directly: %s", url[:80])
+                last_error = e
+            except httpx.TimeoutException as e:
+                logger.warning("Image download timed out: %s", url[:80])
+                last_error = e
+            except Exception as e:
+                logger.warning("Image download exception: %s - %s", type(e).__name__, url[:80])
+                last_error = e
+                break
+
+        if last_error:
+            logger.warning("Image download failed after all attempts: %s", url[:80])
         return None
 
     async def edit_message(

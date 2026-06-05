@@ -49,6 +49,8 @@ class Translator:
         text: str,
         target_lang: str = "中文",
     ) -> str | None:
+        if not text or not text.strip():
+            return None
         cache_key = self._make_cache_key(text, target_lang)
         cached = self._get_cached(cache_key)
         if cached is not None:

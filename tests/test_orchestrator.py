@@ -473,6 +473,36 @@ class TestHandleDiscordMessage:
         mock_translator.translate.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_identical_translation_is_not_output_in_discord_to_qq(
+        self,
+        bridge_config: BridgeConfig,
+        mock_discord_adapter: MagicMock,
+        mock_qq_adapter: MagicMock,
+        mock_translator: MagicMock,
+        mock_converter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_translator.should_skip.return_value = False
+        mock_translator.translate.return_value = "Hello from Discord"
+
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.discord_adapter = mock_discord_adapter
+        orch.qq_adapter = mock_qq_adapter
+        orch.translator = mock_translator
+        orch.converter = mock_converter
+        orch._qq_group_id = "qq_group_1"
+
+        event = make_discord_event()
+        await orch.handle_discord_message(event)
+
+        mock_qq_adapter.send_message.assert_awaited_once()
+        mock_translator.translate.assert_awaited_once()
+        args, _ = mock_qq_adapter.send_message.await_args
+        segments = args[1]
+        assert segments[0].data["text"] == "DiscordUser："
+        assert segments[1].data["text"] == "Hello from Discord"
+
+    @pytest.mark.asyncio
     async def test_no_text_segments_sends_without_translation(
         self,
         bridge_config: BridgeConfig,

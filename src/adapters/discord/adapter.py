@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import io
 import logging
 import re
@@ -290,9 +291,30 @@ class DiscordAdapter(PlatformAdapter):
                 segments.append(text_segment(message.content[last_end:]))
 
         for attachment in message.attachments:
-            segments.append(
-                MessageSegment(type=SEGMENT_IMAGE, data={"file": attachment.url})
-            )
+            # 优先在 Discord 侧下载图片（带代理支持），base64 编码后直传下游，
+            # 避免 URL 被 OneBot CQ 码解析器截断或 CDN 被墙导致下载失败
+            b64 = None
+            file_data = await self._download_file(attachment.url)
+            if file_data:
+                b64 = base64.b64encode(file_data).decode()
+                logger.debug("Downloaded attachment via CDN: %s (%d bytes)", attachment.url[:60], len(file_data))
+            else:
+                file_data = await self._download_file(attachment.proxy_url)
+                if file_data:
+                    b64 = base64.b64encode(file_data).decode()
+                    logger.debug("Downloaded attachment via proxy: %s (%d bytes)", attachment.proxy_url[:60], len(file_data))
+                else:
+                    logger.warning("Failed to download attachment: %s", attachment.url[:80])
+
+            if b64:
+                segments.append(
+                    MessageSegment(type=SEGMENT_IMAGE, data={"file": f"base64://{b64}"})
+                )
+            else:
+                # 下载完全失败时仍传原始 URL，让下游 OneBot 尝试（虽然可能被截断或墙）
+                segments.append(
+                    MessageSegment(type=SEGMENT_IMAGE, data={"file": attachment.url})
+                )
 
         for sticker in message.stickers:
             segments.append(

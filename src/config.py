@@ -27,11 +27,16 @@ def load_config(config_path: str) -> AppConfig:
         proxy=raw["discord"].get("proxy", None),
     )
 
+    qq_proxy = raw["qq"].get("proxy", None)
+    if qq_proxy is None:
+        qq_proxy = discord_cfg.proxy
+
     qq_cfg = QQConfig(
         bot_qq=int(_env_or("PHOBOS_QQ_ACCOUNT", str(raw["qq"]["bot_qq"]))),
         group_id=int(raw["qq"]["group_id"]),
         debug_group_id=int(raw["qq"]["debug_group_id"]) if raw["qq"].get("debug_group_id") else None,
         onebot_ws_url=str(raw["qq"]["onebot_ws_url"]),
+        proxy=qq_proxy,
     )
 
     deepseek_cfg = DeepSeekConfig(

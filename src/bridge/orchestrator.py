@@ -181,6 +181,9 @@ class Orchestrator:
         segments = self._resolve_text_mentions(segments, "discord")
         converted = self.converter.convert_all(DIR_QQ_TO_DISCORD, segments)
 
+        # 在图片 URL 解析前检查原始消息是否有文本段，避免 [图片] 占位干扰判断
+        has_original_text = any(seg.type == SEGMENT_TEXT for seg in converted)
+
         for i, seg in enumerate(converted):
             if seg.type == SEGMENT_IMAGE:
                 file_str = seg.data.get("file", "")
@@ -212,6 +215,7 @@ class Orchestrator:
             converted.insert(0, text_segment("[回复消息]"))
 
         _, original_text = self.translator.extract_text_segments(converted) if self.translator else ("", "")
+        original_text = original_text.strip()
 
         has_distrans = "/distrans" in original_text
 
@@ -222,11 +226,16 @@ class Orchestrator:
                     seg.data["text"] = seg.data.get("text", "").replace("/distrans", "").strip()
             # 重新提取清理后的文本
             _, original_text = self.translator.extract_text_segments(converted) if self.translator else ("", "")
+            original_text = original_text.strip()
             if self._debug:
                 print(f"[DEBUG] 已过滤 /distrans 命令文本 (QQ→Discord)", flush=True)
 
         skip_translation = False
-        if self.translator and original_text:
+        if not has_original_text:
+            skip_translation = True
+            if self._debug:
+                print(f"[DEBUG] 跳过翻译 (QQ→Discord) | 纯非文本消息", flush=True)
+        elif self.translator and original_text:
             if self.translator.should_skip(original_text):
                 skip_translation = True
             elif has_distrans:
@@ -250,7 +259,9 @@ class Orchestrator:
                 text = f"`{event.author_name}`: {translated}"
                 if original_text:
                     text += "\n-# └─ " + original_text.replace("\n", "\n-# ")
-                segments_to_send = [text_segment(text)]
+                # 过滤掉文本段（已被翻译替代），保留非文本段（图片、贴纸等）
+                non_text_segments = [seg for seg in converted if seg.type != SEGMENT_TEXT]
+                segments_to_send = [text_segment(text)] + non_text_segments
             else:
                 # 翻译失败或与原文相同，走原文转发路径
                 prefix = _build_prefix("QQ", event.author_name)
@@ -299,6 +310,7 @@ class Orchestrator:
         prefix = _build_prefix("Discord", event.author_name)
 
         _, original_text = self.translator.extract_text_segments(converted) if self.translator else ("", "")
+        original_text = original_text.strip()
 
         has_distrans = "/distrans" in original_text
 
@@ -309,11 +321,16 @@ class Orchestrator:
                     seg.data["text"] = seg.data.get("text", "").replace("/distrans", "").strip()
             # 重新提取清理后的文本
             _, original_text = self.translator.extract_text_segments(converted) if self.translator else ("", "")
+            original_text = original_text.strip()
             if self._debug:
                 print(f"[DEBUG] 已过滤 /distrans 命令文本 (Discord→QQ)", flush=True)
 
         skip_translation = False
-        if self.translator and original_text:
+        if not any(seg.type == SEGMENT_TEXT for seg in converted):
+            skip_translation = True
+            if self._debug:
+                print(f"[DEBUG] 跳过翻译 (Discord→QQ) | 纯非文本消息", flush=True)
+        elif self.translator and original_text:
             if self.translator.should_skip(original_text):
                 skip_translation = True
             elif has_distrans:
@@ -328,6 +345,12 @@ class Orchestrator:
             if translated is not None:
                 if self._debug:
                     print(f"[DEBUG] 翻译完成 | length={len(translated)}", flush=True)
+                if _normalize_text(translated) == _normalize_text(original_text):
+                    if self._debug:
+                        print(f"[DEBUG] 跳过翻译结果 | 译文与原文相同（规范化后）", flush=True)
+                    translated = None
+
+            if translated is not None:
                 new_prefix = text_segment(f"{event.author_name}：{translated}\n└─ ")
                 segments_to_send = [new_prefix] + converted
             else:
