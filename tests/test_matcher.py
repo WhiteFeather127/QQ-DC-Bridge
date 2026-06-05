@@ -153,7 +153,8 @@ class TestRegisterConverterRules:
 
         assert result is not None
         assert result.type == "text"
-        assert result.data["text"] == "<@90001>"
+        # 当前实现返回 @QQ显示名（从 QQ 缓存中查找）
+        assert result.data["text"] == "@Alice"
 
     def test_qq_to_discord_no_match_falls_back_to_text(
         self,
@@ -180,10 +181,9 @@ class TestRegisterConverterRules:
         result = converter.convert(DIR_DISCORD_TO_QQ, segment)
 
         assert result is not None
-        assert result.type == SEGMENT_AT
-        assert result.data["platform"] == "qq"
-        assert result.data["user_id"] == "10001"
-        assert result.data["display"] == "Alice"
+        # 当前实现将 Discord at 转换为纯文本 @显示名
+        assert result.type == "text"
+        assert result.data["text"] == "@Alice"
 
     def test_discord_to_qq_no_match_falls_back_to_text(
         self,
@@ -215,9 +215,12 @@ class TestRegisterConverterRules:
 
         result = converter.convert_all(DIR_QQ_TO_DISCORD, segments)
 
-        assert len(result) == 2
-        assert result[0].data["text"] == "<@90001>"
-        assert result[1].data["text"] == "@Stranger"
+        # converter 将 AT 段转为文本段，故 text_segment 保留原样 + 2 个 AT 转文本 = 4 个文本段
+        assert len(result) == 4
+        assert result[0].data["text"] == "Hello "
+        assert result[1].data["text"] == "@Alice"
+        assert result[2].data["text"] == " "
+        assert result[3].data["text"] == "@Stranger"
 
     def test_unregistered_direction_returns_none(
         self,

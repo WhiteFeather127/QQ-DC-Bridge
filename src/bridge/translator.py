@@ -91,6 +91,8 @@ class Translator:
         return result
 
     def should_skip(self, text: str) -> bool:
+        if len(text) < 10:
+            return True
         if re.fullmatch(r"https?://\S+", text):
             return True
         if text.startswith("```") and text.endswith("```"):

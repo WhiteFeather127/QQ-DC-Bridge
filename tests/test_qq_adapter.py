@@ -192,26 +192,18 @@ class TestSegmentBuilder:
 class TestQQAdapter:
     @pytest.fixture
     def adapter(self) -> pytest.FixtureRequest:
-        with (
-            patch("src.adapters.qq.adapter.CQHttp") as mock_cqhttp,
-            patch("src.adapters.qq.adapter.websockets") as mock_ws,
-        ):
-            mock_bot = MagicMock()
-            mock_bot.call_action = AsyncMock()
-            mock_cqhttp.return_value = mock_bot
+        from src.adapters.qq.adapter import QQAdapter
 
-            from src.adapters.qq.adapter import QQAdapter
-
-            a = QQAdapter(bot_qq=123456, group_id=111222, onebot_ws_url="ws://127.0.0.1:8080")
-            a._bot = mock_bot
-            yield a
+        a = QQAdapter(bot_qq=123456, group_id=111222, onebot_ws_url="ws://127.0.0.1:8080")
+        a._ws_api_call = AsyncMock()
+        return a
 
     @pytest.mark.asyncio
     async def test_send_message_success(self, adapter: pytest.FixtureRequest) -> None:
-        adapter._bot.call_action.return_value = {"message_id": 42}
+        adapter._ws_api_call.return_value = {"data": {"message_id": 42}}
         result = await adapter.send_message("111222", [text_segment("hello")])
         assert result == "42"
-        adapter._bot.call_action.assert_called_once_with(
+        adapter._ws_api_call.assert_awaited_once_with(
             "send_group_msg",
             group_id=111222,
             message="hello",
@@ -219,16 +211,17 @@ class TestQQAdapter:
 
     @pytest.mark.asyncio
     async def test_send_message_with_reply(self, adapter: pytest.FixtureRequest) -> None:
-        adapter._bot.call_action.return_value = {"message_id": 43}
+        adapter._ws_api_call.return_value = {"data": {"message_id": 43}}
         result = await adapter.send_message("111222", [text_segment("hello")], reply_to="100")
         assert result == "43"
-        adapter._bot.call_action.assert_called_once()
-        args, kwargs = adapter._bot.call_action.call_args
+        adapter._ws_api_call.assert_awaited_once()
+        args, kwargs = adapter._ws_api_call.await_args
+        assert args[0] == "send_group_msg"
         assert "[CQ:reply,id=100]" in kwargs["message"]
 
     @pytest.mark.asyncio
     async def test_send_message_failure(self, adapter: pytest.FixtureRequest) -> None:
-        adapter._bot.call_action.side_effect = Exception("API error")
+        adapter._ws_api_call.side_effect = Exception("API error")
         result = await adapter.send_message("111222", [text_segment("hello")])
         assert result is None
 
@@ -245,16 +238,16 @@ class TestQQAdapter:
 
     @pytest.mark.asyncio
     async def test_list_members_success(self, adapter: pytest.FixtureRequest) -> None:
-        adapter._bot.call_action.return_value = [
+        adapter._ws_api_call.return_value = {"data": [
             {"user_id": 1001, "nickname": "Alice", "card": "AA"},
             {"user_id": 1002, "nickname": "Bob", "card": ""},
-        ]
+        ]}
         result = await adapter.list_members("111222")
         assert result == {"1001": "AA", "1002": "Bob"}
 
     @pytest.mark.asyncio
     async def test_list_members_failure(self, adapter: pytest.FixtureRequest) -> None:
-        adapter._bot.call_action.side_effect = Exception("API error")
+        adapter._ws_api_call.side_effect = Exception("API error")
         result = await adapter.list_members("111222")
         assert result == {}
 
@@ -281,7 +274,7 @@ class TestQQAdapter:
 
     @pytest.mark.asyncio
     async def test_send_message_rate_limited(self, adapter: pytest.FixtureRequest) -> None:
-        adapter._bot.call_action.return_value = {"message_id": 42}
+        adapter._ws_api_call.return_value = {"data": {"message_id": 42}}
         adapter._rate_limiter._tokens = 0
 
         with pytest.raises(asyncio.TimeoutError):
@@ -375,10 +368,17 @@ class TestQQAdapter:
         callback = AsyncMock()
         adapter.set_on_message(callback)
         await adapter._dispatch_ws_message(ws_message)
+        await asyncio.sleep(0)
         callback.assert_called_once()
         event = callback.call_args[0][0]
         assert event.platform == "qq"
         assert event.channel_id == "111222"
+        assert event.author_id == "789012"
+        assert event.message_id == "1"
+        assert event.author_name == "Tester"
+        assert len(event.segments) == 1
+        assert event.segments[0].type == SEGMENT_TEXT
+        assert event.segments[0].data["text"] == "test"
 
     @pytest.mark.asyncio
     async def test_start_stop(self, adapter: pytest.FixtureRequest) -> None:

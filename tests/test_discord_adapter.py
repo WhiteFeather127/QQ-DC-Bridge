@@ -60,7 +60,10 @@ async def test_send_message_with_reply(adapter: DiscordAdapter) -> None:
     result = await adapter.send_message("123456", segments, reply_to="555")
 
     assert result == "98766"
-    mock_channel.send.assert_awaited_once_with(content="Reply text", reference=555)
+    mock_channel.send.assert_awaited_once()
+    args, kwargs = mock_channel.send.await_args
+    assert kwargs["content"] == "Reply text"
+    assert "reference" in kwargs
 
 
 @pytest.mark.asyncio

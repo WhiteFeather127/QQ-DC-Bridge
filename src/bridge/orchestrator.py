@@ -213,29 +213,48 @@ class Orchestrator:
 
         _, original_text = self.translator.extract_text_segments(converted) if self.translator else ("", "")
 
-        translated: str | None = None
+        has_distrans = "/distrans" in original_text
+
+        # 从 converted 中过滤掉 /distrans 命令文本，避免泄露到目标平台
+        if has_distrans:
+            for seg in converted:
+                if seg.type == SEGMENT_TEXT:
+                    seg.data["text"] = seg.data.get("text", "").replace("/distrans", "").strip()
+            # 重新提取清理后的文本
+            _, original_text = self.translator.extract_text_segments(converted) if self.translator else ("", "")
+            if self._debug:
+                print(f"[DEBUG] 已过滤 /distrans 命令文本 (QQ→Discord)", flush=True)
+
+        skip_translation = False
         if self.translator and original_text:
-            skip_translation = self.translator.should_skip(original_text)
-            if not skip_translation and "/distrans" in original_text:
+            if self.translator.should_skip(original_text):
+                skip_translation = True
+            elif has_distrans:
                 skip_translation = True
                 if self._debug:
                     print(f"[DEBUG] 跳过翻译 (QQ→Discord) | /distrans detected", flush=True)
 
-            if not skip_translation:
+        if self.translator and original_text and not skip_translation:
+            if self._debug:
+                print(f"[DEBUG] 开始翻译 (QQ→Discord) | {original_text[:40]}...", flush=True)
+            translated = await self.translator.translate(original_text, target_lang="英文")
+            if translated is not None:
                 if self._debug:
-                    print(f"[DEBUG] 开始翻译 (QQ→Discord) | {original_text[:40]}...", flush=True)
-                translated = await self.translator.translate(original_text, target_lang="英文")
-                if translated is not None:
+                    print(f"[DEBUG] 翻译完成 | length={len(translated)}", flush=True)
+                if _normalize_text(translated) == _normalize_text(original_text):
                     if self._debug:
-                        print(f"[DEBUG] 翻译完成 | length={len(translated)}", flush=True)
-                    if _normalize_text(translated) == _normalize_text(original_text):
-                        if self._debug:
-                            print(f"[DEBUG] 跳过翻译结果 | 译文与原文相同（规范化后）", flush=True)
-                        translated = None
-            text = f"`{event.author_name}`: {translated}"
-            if original_text:
-                text += "\n-# └─ " + original_text.replace("\n", "\n-# ")
-            segments_to_send = [text_segment(text)]
+                        print(f"[DEBUG] 跳过翻译结果 | 译文与原文相同（规范化后）", flush=True)
+                    translated = None
+
+            if translated is not None:
+                text = f"`{event.author_name}`: {translated}"
+                if original_text:
+                    text += "\n-# └─ " + original_text.replace("\n", "\n-# ")
+                segments_to_send = [text_segment(text)]
+            else:
+                # 翻译失败或与原文相同，走原文转发路径
+                prefix = _build_prefix("QQ", event.author_name)
+                segments_to_send = [prefix] + converted
         else:
             prefix = _build_prefix("QQ", event.author_name)
             segments_to_send = [prefix] + converted
@@ -281,7 +300,28 @@ class Orchestrator:
 
         _, original_text = self.translator.extract_text_segments(converted) if self.translator else ("", "")
 
-        if self.translator and original_text and not self.translator.should_skip(original_text):
+        has_distrans = "/distrans" in original_text
+
+        # 从 converted 中过滤掉 /distrans 命令文本，避免泄露到目标平台
+        if has_distrans:
+            for seg in converted:
+                if seg.type == SEGMENT_TEXT:
+                    seg.data["text"] = seg.data.get("text", "").replace("/distrans", "").strip()
+            # 重新提取清理后的文本
+            _, original_text = self.translator.extract_text_segments(converted) if self.translator else ("", "")
+            if self._debug:
+                print(f"[DEBUG] 已过滤 /distrans 命令文本 (Discord→QQ)", flush=True)
+
+        skip_translation = False
+        if self.translator and original_text:
+            if self.translator.should_skip(original_text):
+                skip_translation = True
+            elif has_distrans:
+                skip_translation = True
+                if self._debug:
+                    print(f"[DEBUG] 跳过翻译 (Discord→QQ) | /distrans detected", flush=True)
+
+        if self.translator and original_text and not skip_translation:
             if self._debug:
                 print(f"[DEBUG] 开始翻译 (Discord→QQ) | {original_text[:40]}...", flush=True)
             translated = await self.translator.translate(original_text, target_lang="中文")
