@@ -97,7 +97,7 @@ def _build_translation_sep(text: str) -> MessageSegment:
 
 def _normalize_text(text: str) -> str:
     normalized = unicodedata.normalize('NFKC', text)
-    return ''.join(normalized.split())
+    return ''.join(normalized.split()).casefold()
 
 
 _MD5_HEX_RE = re.compile(r'^([0-9a-fA-F]{32})')
