@@ -449,8 +449,6 @@ class DiscordAdapter(PlatformAdapter):
         )
         await self._trigger_on_message(event)
 
-        await self._trigger_on_message(event)
-
         # 记录最后处理的 Discord 消息 ID（Snowflake，可直接按数值比较）
         if self._last_processed_id is None or int(msg_id_str) > int(self._last_processed_id):
             self._last_processed_id = msg_id_str
