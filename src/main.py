@@ -12,10 +12,12 @@ if str(SRC_DIR) not in sys.path:
 from config import load_config
 from adapters.discord.adapter import DiscordAdapter
 from adapters.qq.adapter import QQAdapter
+from bridge.bind_manager import BindManager
 from bridge.translator import Translator
 from bridge.matcher import UserMatcher
 from bridge.message_store import MessageStore
 from bridge.segment.converter import SegmentConverter
+from bridge.verification import VerificationManager
 from bridge.orchestrator import Orchestrator
 from utils.logger import JSONFormatter, DailyRotatingFileHandler, suppress_discord_reconnect_traceback
 
@@ -88,14 +90,23 @@ async def main() -> None:
 
     translator = Translator(config.deepseek)
 
-    matcher = UserMatcher()
+    bind_manager = BindManager(data_dir=config.bridge.data_dir)
+    verification_manager = VerificationManager()
+
+    matcher = UserMatcher(bind_manager=bind_manager)
 
     converter = SegmentConverter()
     matcher.register_converter_rules(converter)
 
     message_store = MessageStore(data_dir=config.bridge.data_dir)
 
-    orchestrator = Orchestrator(config.bridge, message_store, debug=args.debug)
+    orchestrator = Orchestrator(
+        config.bridge,
+        message_store,
+        bind_manager=bind_manager,
+        verification_manager=verification_manager,
+        debug=args.debug,
+    )
     orchestrator.translator = translator
     orchestrator.matcher = matcher
     orchestrator.converter = converter

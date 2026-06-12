@@ -1,21 +1,24 @@
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
 from adapters.base import MessageEvent, PlatformAdapter
+from bridge.bind_manager import BindManager
+from bridge.matcher import UserMatcher
 from bridge.orchestrator import DIR_DISCORD_TO_QQ, DIR_QQ_TO_DISCORD, PendingTranslation, Orchestrator
 from bridge.segment.base import MessageSegment
 from bridge.segment.converter import SegmentConverter
 from bridge.segment.types import at_segment, text_segment
 from bridge.translator import Translator
+from bridge.verification import VerificationManager
 from models.config_model import BridgeConfig
 
 
 @pytest.fixture
-def bridge_config() -> BridgeConfig:
-    return BridgeConfig()
+def bridge_config(tmp_path) -> BridgeConfig:
+    return BridgeConfig(data_dir=str(tmp_path / "data"))
 
 
 @pytest.fixture
@@ -131,7 +134,7 @@ class TestHandleQQMessage:
         channel = args[0]
         segments = args[1]
         assert channel == "dc_channel_1"
-        assert segments[0].data["text"] == "QQUser："
+        assert segments[0].data["text"] == "`QQUser`: "
         assert segments[1].data["text"] == "Hello from QQ"
 
         mock_translator.translate.assert_not_awaited()
@@ -204,7 +207,7 @@ class TestHandleQQMessage:
         mock_translator.translate.assert_awaited_once_with("Hello from QQ", target_lang="英文")
         args, _ = mock_discord_adapter.send_message.await_args
         segments = args[1]
-        assert segments[0].data["text"] == "QQUser："
+        assert segments[0].data["text"] == "`QQUser`: "
         assert segments[1].data["text"] == "Hello from QQ"
 
     @pytest.mark.asyncio
@@ -237,7 +240,7 @@ class TestHandleQQMessage:
         mock_discord_adapter.send_message.assert_awaited_once()
         args, _ = mock_discord_adapter.send_message.await_args
         segments = args[1]
-        assert segments[0].data["text"] == "QQUser："
+        assert segments[0].data["text"] == "`QQUser`: "
         assert segments[1].data["text"] == "Hello"
 
     @pytest.mark.asyncio
@@ -270,7 +273,7 @@ class TestHandleQQMessage:
         mock_translator.translate.assert_awaited_once_with("Hello from QQ", target_lang="英文")
         args, _ = mock_discord_adapter.send_message.await_args
         segments = args[1]
-        assert segments[0].data["text"] == "QQUser："
+        assert segments[0].data["text"] == "`QQUser`: "
         assert segments[1].data["text"] == "Hello from QQ"
 
     @pytest.mark.asyncio
@@ -304,7 +307,7 @@ class TestHandleQQMessage:
         mock_discord_adapter.send_message.assert_awaited_once()
         args, _ = mock_discord_adapter.send_message.await_args
         segments = args[1]
-        assert segments[0].data["text"] == "QQUser："
+        assert segments[0].data["text"] == "`QQUser`: "
         assert segments[1].data["text"] == "Hello from QQ"
 
     @pytest.mark.asyncio
@@ -738,3 +741,399 @@ class TestStartStop:
         orch.qq_adapter = None
 
         await orch.stop()
+
+
+class TestHandleBindCommand:
+    @pytest.mark.asyncio
+    async def test_bind_from_qq(
+        self,
+        bridge_config: BridgeConfig,
+        mock_qq_adapter: MagicMock,
+        mock_discord_adapter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_qq_adapter.send_private_msg = AsyncMock(return_value=True)
+
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.qq_adapter = mock_qq_adapter
+
+        event = MessageEvent(
+            message_id="pv_1",
+            platform="qq",
+            channel_id="",
+            author_id="10001",
+            author_name="QQUser",
+            is_private=True,
+            segments=[text_segment("/bind DiscordUser")],
+        )
+        await orch.handle_private_message(event)
+
+        mock_qq_adapter.send_private_msg.assert_called_once()
+        call_text = mock_qq_adapter.send_private_msg.call_args.args[1]
+        assert "格式错误" in call_text
+
+    @pytest.mark.asyncio
+    async def test_bind_from_discord_with_qq_number(
+        self,
+        bridge_config: BridgeConfig,
+        mock_discord_adapter: MagicMock,
+        mock_qq_adapter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_discord_adapter.send_dm = AsyncMock(return_value=True)
+        mock_qq_adapter.send_private_msg = AsyncMock(return_value=True)
+        matcher = MagicMock(spec=UserMatcher)
+        matcher.match_user = MagicMock(return_value=("10001", "QQUser"))
+        matcher.has_user = MagicMock(return_value=False)
+
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.discord_adapter = mock_discord_adapter
+        orch.qq_adapter = mock_qq_adapter
+        orch.matcher = matcher
+
+        event = MessageEvent(
+            message_id="pv_2",
+            platform="discord",
+            channel_id="",
+            author_id="discord_user_1",
+            author_name="DiscordUser",
+            is_private=True,
+            segments=[text_segment("/bind 10001")],
+        )
+        await orch.handle_private_message(event)
+
+        assert mock_discord_adapter.send_dm.await_count >= 1
+        call_text = mock_discord_adapter.send_dm.call_args.args[1]
+        assert "verification" in call_text.lower()
+
+    @pytest.mark.asyncio
+    async def test_bind_rejected_already_bound(
+        self,
+        bridge_config: BridgeConfig,
+        mock_qq_adapter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_qq_adapter.send_private_msg = AsyncMock(return_value=True)
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.qq_adapter = mock_qq_adapter
+
+        event = MessageEvent(
+            message_id="pv_3",
+            platform="qq",
+            channel_id="",
+            author_id="10001",
+            author_name="QQUser",
+            is_private=True,
+            segments=[text_segment("/bind DiscordUser")],
+        )
+        await orch.handle_private_message(event)
+
+        mock_qq_adapter.send_private_msg.assert_called_once()
+        call_text = mock_qq_adapter.send_private_msg.call_args.args[1]
+        assert "格式错误" in call_text
+
+    @pytest.mark.asyncio
+    async def test_bind_target_not_found(
+        self,
+        bridge_config: BridgeConfig,
+        mock_qq_adapter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_qq_adapter.send_private_msg = AsyncMock(return_value=True)
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.qq_adapter = mock_qq_adapter
+
+        event = MessageEvent(
+            message_id="pv_4",
+            platform="qq",
+            channel_id="",
+            author_id="10001",
+            author_name="QQUser",
+            is_private=True,
+            segments=[text_segment("/bind NonExistentUser")],
+        )
+        await orch.handle_private_message(event)
+
+        mock_qq_adapter.send_private_msg.assert_called_once()
+        call_text = mock_qq_adapter.send_private_msg.call_args.args[1]
+        assert "格式错误" in call_text
+
+    @pytest.mark.asyncio
+    async def test_bind_invalid_format(
+        self,
+        bridge_config: BridgeConfig,
+        mock_qq_adapter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_qq_adapter.send_private_msg = AsyncMock(return_value=True)
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.qq_adapter = mock_qq_adapter
+
+        event = MessageEvent(
+            message_id="pv_5",
+            platform="qq",
+            channel_id="",
+            author_id="10001",
+            author_name="QQUser",
+            is_private=True,
+            segments=[text_segment("/bind")],
+        )
+        await orch.handle_private_message(event)
+
+        mock_qq_adapter.send_private_msg.assert_called_once()
+        call_text = mock_qq_adapter.send_private_msg.call_args.args[1]
+        assert "格式错误" in call_text
+
+
+class TestHandleUnbindCommand:
+    @pytest.mark.asyncio
+    async def test_unbind_from_qq(
+        self,
+        bridge_config: BridgeConfig,
+        mock_qq_adapter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_qq_adapter.send_private_msg = AsyncMock(return_value=True)
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.qq_adapter = mock_qq_adapter
+        orch._bind_manager.bind(qq_id="10001", discord_id="discord_user_1")
+
+        event = MessageEvent(
+            message_id="pv_6",
+            platform="qq",
+            channel_id="",
+            author_id="10001",
+            author_name="QQUser",
+            is_private=True,
+            segments=[text_segment("/unbind")],
+        )
+        await orch.handle_private_message(event)
+
+        mock_qq_adapter.send_private_msg.assert_called_once()
+        call_text = mock_qq_adapter.send_private_msg.call_args.args[1]
+        assert "解绑" in call_text
+        assert not orch._bind_manager.is_bound("qq", "10001")
+
+    @pytest.mark.asyncio
+    async def test_unbind_from_discord(
+        self,
+        bridge_config: BridgeConfig,
+        mock_discord_adapter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_discord_adapter.send_dm = AsyncMock(return_value=True)
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.discord_adapter = mock_discord_adapter
+        orch._bind_manager.bind(qq_id="10001", discord_id="discord_user_1")
+
+        event = MessageEvent(
+            message_id="pv_7",
+            platform="discord",
+            channel_id="",
+            author_id="discord_user_1",
+            author_name="DiscordUser",
+            is_private=True,
+            segments=[text_segment("/unbind")],
+        )
+        await orch.handle_private_message(event)
+
+        mock_discord_adapter.send_dm.assert_called_once()
+        call_text = mock_discord_adapter.send_dm.call_args.args[1]
+        assert "Unbound" in call_text
+        assert not orch._bind_manager.is_bound("discord", "discord_user_1")
+
+    @pytest.mark.asyncio
+    async def test_unbind_not_bound(
+        self,
+        bridge_config: BridgeConfig,
+        mock_qq_adapter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_qq_adapter.send_private_msg = AsyncMock(return_value=True)
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.qq_adapter = mock_qq_adapter
+
+        event = MessageEvent(
+            message_id="pv_8",
+            platform="qq",
+            channel_id="",
+            author_id="10001",
+            author_name="QQUser",
+            is_private=True,
+            segments=[text_segment("/unbind")],
+        )
+        await orch.handle_private_message(event)
+
+        mock_qq_adapter.send_private_msg.assert_called_once()
+        call_text = mock_qq_adapter.send_private_msg.call_args.args[1]
+        assert "尚未绑定" in call_text
+
+
+class TestHandleVerificationReply:
+    @pytest.mark.asyncio
+    async def test_verification_success_then_bind(
+        self,
+        bridge_config: BridgeConfig,
+        mock_discord_adapter: MagicMock,
+        mock_qq_adapter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_discord_adapter.send_dm = AsyncMock(return_value=True)
+        mock_qq_adapter.send_private_msg = AsyncMock(return_value=True)
+        matcher = MagicMock(spec=UserMatcher)
+        matcher.match_user = MagicMock(return_value=("20001", "QQUser"))
+        matcher.has_user = MagicMock(return_value=False)
+
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.discord_adapter = mock_discord_adapter
+        orch.qq_adapter = mock_qq_adapter
+        orch.matcher = matcher
+
+        code_event = MessageEvent(
+            message_id="pv_9",
+            platform="discord",
+            channel_id="",
+            author_id="discord_user_1",
+            author_name="DiscordUser",
+            is_private=True,
+            segments=[text_segment("/bind 20001")],
+        )
+        await orch.handle_private_message(code_event)
+        mock_discord_adapter.send_dm.reset_mock()
+
+        pending = list(orch._verification_manager._pending.values())[0]
+        verify_code = pending.code
+
+        verify_event = MessageEvent(
+            message_id="pv_10",
+            platform="discord",
+            channel_id="",
+            author_id="discord_user_1",
+            author_name="DiscordUser",
+            is_private=True,
+            segments=[text_segment(verify_code)],
+        )
+        await orch.handle_private_message(verify_event)
+
+        assert mock_discord_adapter.send_dm.await_count >= 1
+        call_text = mock_discord_adapter.send_dm.call_args.args[1]
+        assert "successful" in call_text.lower() or "成功" in call_text
+        assert orch._bind_manager.is_bound("discord", "discord_user_1")
+
+    @pytest.mark.asyncio
+    async def test_verification_wrong_code(
+        self,
+        bridge_config: BridgeConfig,
+        mock_discord_adapter: MagicMock,
+        mock_message_store: MagicMock,
+    ) -> None:
+        mock_discord_adapter.send_dm = AsyncMock(return_value=True)
+        matcher = MagicMock(spec=UserMatcher)
+        matcher.match_user = MagicMock(return_value=("discord_user_1", "DiscordUser"))
+        matcher.has_user = MagicMock(return_value=False)
+
+        orch = Orchestrator(bridge_config, mock_message_store)
+        orch.discord_adapter = mock_discord_adapter
+        orch.matcher = matcher
+
+        code_event = MessageEvent(
+            message_id="pv_11",
+            platform="discord",
+            channel_id="",
+            author_id="discord_user_1",
+            author_name="DiscordUser",
+            is_private=True,
+            segments=[text_segment("/bind 10001")],
+        )
+        await orch.handle_private_message(code_event)
+        mock_discord_adapter.send_dm.reset_mock()
+
+        verify_event = MessageEvent(
+            message_id="pv_12",
+            platform="discord",
+            channel_id="",
+            author_id="discord_user_1",
+            author_name="DiscordUser",
+            is_private=True,
+            segments=[text_segment("000000")],
+        )
+        await orch.handle_private_message(verify_event)
+
+        assert mock_discord_adapter.send_dm.await_count >= 1
+        call_text = mock_discord_adapter.send_dm.call_args.args[1]
+        assert "错误" in call_text or "Invalid" in call_text
+        assert not orch._bind_manager.is_bound("discord", "discord_user_1")
+
+
+class TestResolveAuthorDisplayName:
+    def test_bound_user_returns_bound_name(self, tmp_path) -> None:
+        bm = BindManager(data_dir=str(tmp_path))
+        bm.bind(qq_id="10001", discord_id="discord_user_1")
+
+        matcher = UserMatcher()
+        matcher._cache = {
+            "qq": {"10001": "QQUser"},
+            "discord": {"discord_user_1": "DiscordUser"},
+        }
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._bind_manager = bm
+        orch.matcher = matcher
+
+        result = orch._resolve_author_display_name("qq", "10001", "original_name")
+        assert result == "DiscordUser"
+
+    def test_unbound_user_returns_original(self, tmp_path) -> None:
+        bm = BindManager(data_dir=str(tmp_path))
+        matcher = UserMatcher()
+
+        orch = Orchestrator.__new__(Orchestrator)
+        orch._bind_manager = bm
+        orch.matcher = matcher
+
+        result = orch._resolve_author_display_name("qq", "10001", "OriginalName")
+        assert result == "OriginalName"
+
+
+class TestParseBindTarget:
+    def test_bind_regex_handles_multiple_spaces(self) -> None:
+        orch = Orchestrator.__new__(Orchestrator)
+        platform, ident = orch._parse_bind_target("/bind   DiscordUser", from_platform="qq")
+        assert platform is None
+        assert ident == ""
+
+    def test_bind_with_qq_prefix(self) -> None:
+        orch = Orchestrator.__new__(Orchestrator)
+        platform, ident = orch._parse_bind_target("/bind QQ:10001", from_platform="discord")
+        assert platform == "qq"
+        assert ident == "10001"
+
+    def test_bind_with_discord_prefix_from_qq(self) -> None:
+        orch = Orchestrator.__new__(Orchestrator)
+        platform, ident = orch._parse_bind_target("/bind Discord:DiscordUser", from_platform="qq")
+        assert platform == "discord"
+        assert ident == "DiscordUser"
+
+    def test_bind_empty_after_prefix(self) -> None:
+        orch = Orchestrator.__new__(Orchestrator)
+        platform, ident = orch._parse_bind_target("/bind", from_platform="discord")
+        assert platform is None
+        assert ident == ""
+
+    def test_bind_just_whitespace(self) -> None:
+        orch = Orchestrator.__new__(Orchestrator)
+        platform, ident = orch._parse_bind_target("/bind   ", from_platform="discord")
+        assert platform is None
+        assert ident == ""
+
+    def test_bind_digits_from_discord_is_qq(self) -> None:
+        orch = Orchestrator.__new__(Orchestrator)
+        platform, ident = orch._parse_bind_target("/bind 10001", from_platform="discord")
+        assert platform == "qq"
+        assert ident == "10001"
+
+    def test_bind_digits_from_qq_rejected(self) -> None:
+        orch = Orchestrator.__new__(Orchestrator)
+        platform, ident = orch._parse_bind_target("/bind 12345", from_platform="qq")
+        assert platform is None
+        assert ident == ""

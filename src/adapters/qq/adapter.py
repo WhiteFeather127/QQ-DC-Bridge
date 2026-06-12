@@ -308,7 +308,7 @@ class QQAdapter(PlatformAdapter):
             if message_type == "group":
                 asyncio.create_task(self._on_group_message(data))
             elif message_type == "private":
-                logger.debug("Ignoring private message from %s", data.get("user_id"))
+                asyncio.create_task(self._on_private_message(data))
 
     async def _on_group_message(self, data: dict[str, Any]) -> None:
         group_id = str(data.get("group_id", ""))
@@ -342,3 +342,60 @@ class QQAdapter(PlatformAdapter):
         )
 
         await self._trigger_on_message(event)
+
+    async def _on_private_message(self, data: dict[str, Any]) -> None:
+        """处理 QQ 私信消息."""
+        sender = data.get("sender", {})
+        user_id = str(sender.get("user_id", data.get("user_id", "")))
+
+        if str(user_id) == str(self._bot_qq):
+            return
+
+        raw_message = data.get("message", "")
+        if isinstance(raw_message, str):
+            segments = parse_cq_code(raw_message)
+        elif isinstance(raw_message, list):
+            segments = parse_onebot_array(raw_message)
+        else:
+            segments = []
+
+        nickname = sender.get("card", "") or sender.get("nickname", "")
+
+        logger.info("Private message from QQ user %s (%s)", user_id, nickname)
+
+        event = MessageEvent(
+            message_id=str(data.get("message_id", "")),
+            platform="qq",
+            channel_id="",
+            author_id=user_id,
+            author_name=nickname,
+            segments=segments,
+            timestamp=datetime.now(),
+            is_private=True,
+        )
+
+        await self._trigger_on_message(event)
+
+    async def send_private_msg(self, user_id: int, message: str) -> bool:
+        """向 QQ 用户发送私信 (调用 OneBot send_private_msg). """
+        try:
+            result = await self._ws_api_call(
+                "send_private_msg",
+                user_id=user_id,
+                message=message,
+            )
+            if result is None:
+                logger.warning("send_private_msg returned None for user %s", user_id)
+                return False
+            data = result.get("data") if isinstance(result, dict) else None
+            success = data is not None or result.get("status") == "ok"
+            if success:
+                logger.info("Private message sent to QQ user %s", user_id)
+            else:
+                logger.warning(
+                    "send_private_msg response unexpected: %s", result,
+                )
+            return success
+        except Exception:
+            logger.exception("Failed to send private message to QQ user %s", user_id)
+            return False

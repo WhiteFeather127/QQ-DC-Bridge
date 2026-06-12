@@ -16,6 +16,7 @@ class MessageEvent:
     author_name: str
     segments: list[Any]
     timestamp: datetime = field(default_factory=datetime.now)
+    is_private: bool = False
 
 
 class PlatformAdapter(ABC):

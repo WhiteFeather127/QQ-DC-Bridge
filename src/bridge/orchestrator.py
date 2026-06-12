@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import re
 import time
 import unicodedata
 from typing import TYPE_CHECKING, Any
 
+from bridge.bind_manager import BindError, BindManager
 from bridge.message_store import MessageStore
+
+logger = logging.getLogger(__name__)
 from bridge.segment.base import MessageSegment
 from bridge.segment.converter import (
     DIR_DISCORD_TO_QQ,
@@ -22,8 +26,10 @@ from bridge.segment.types import (
     at_segment,
     text_segment,
 )
+from bridge.verification import VerificationManager
 
 MENTION_TEXT_RE = re.compile(r"@([^\s]+)")
+BIND_COMMAND_RE = re.compile(r"^/bind\s+")
 
 if TYPE_CHECKING:
     from adapters.base import MessageEvent, PlatformAdapter
@@ -133,14 +139,19 @@ class Orchestrator:
         self,
         config: BridgeConfig,
         message_store: MessageStore,
+        bind_manager: BindManager | None = None,
+        verification_manager: VerificationManager | None = None,
         debug: bool = False,
     ) -> None:
         self._config = config
         self._message_store = message_store
+        self._bind_manager = bind_manager or BindManager(config.data_dir)
+        self._verification_manager = verification_manager or VerificationManager()
         self._debug = debug
         self._start_time = time.monotonic()
 
         self._pending: dict[str, PendingTranslation] = {}
+        self._bind_lock = asyncio.Lock()
 
         self.discord_adapter: PlatformAdapter | None = None
         self.qq_adapter: PlatformAdapter | None = None
@@ -157,9 +168,19 @@ class Orchestrator:
         if self.discord_adapter is None:
             return
 
+        # 私信消息路由到绑定命令处理器
+        if event.is_private:
+            await self.handle_private_message(event)
+            return
+
+        # 绑定昵称替换
+        author_name = self._resolve_author_display_name(
+            "qq", event.author_id, event.author_name,
+        )
+
         if self._debug:
             preview = _debug_message_preview(event.segments)
-            print(f"[DEBUG] 收到 QQ 消息 | {event.author_name}: {preview}", flush=True)
+            print(f"[DEBUG] 收到 QQ 消息 | {event.author_name} ({author_name}): {preview}", flush=True)
 
         segments, reply_platform, reply_msg_id = _extract_reply_segment(event.segments)
 
@@ -187,7 +208,7 @@ class Orchestrator:
 
         if not has_bot_mention and not has_bot_reply:
             if self._debug:
-                print(f"[DEBUG] 跳过 QQ 消息 | {event.author_name}: 未@bot 且未回复 bot 消息", flush=True)
+                print(f"[DEBUG] 跳过 QQ 消息 | {author_name}: 未@bot 且未回复 bot 消息", flush=True)
             return
 
         segments = self._resolve_text_mentions(segments, "discord")
@@ -311,7 +332,7 @@ class Orchestrator:
                     translated = None
 
             if translated is not None:
-                text = f"`{event.author_name}`: {translated}"
+                text = f"`{author_name}`: {translated}"
                 if original_text:
                     text += "\n-# └─ " + original_text.replace("\n", "\n-# ")
                 # 过滤掉文本段（已被翻译替代），保留非文本段（图片、贴纸等）
@@ -319,10 +340,10 @@ class Orchestrator:
                 segments_to_send = [text_segment(text)] + non_text_segments
             else:
                 # 翻译失败或与原文相同，走原文转发路径
-                prefix = text_segment(f"`{event.author_name}`: ")
+                prefix = text_segment(f"`{author_name}`: ")
                 segments_to_send = [prefix] + converted
         else:
-            prefix = text_segment(f"`{event.author_name}`: ")
+            prefix = text_segment(f"`{author_name}`: ")
             segments_to_send = [prefix] + converted
 
         msg_id = await self.discord_adapter.send_message(
@@ -332,7 +353,7 @@ class Orchestrator:
         )
         if msg_id is None:
             if self._debug:
-                print(f"[DEBUG] 发送到 Discord 失败 | {event.author_name}", flush=True)
+                print(f"[DEBUG] 发送到 Discord 失败 | {author_name}", flush=True)
             return
 
         self._message_store.record(qq_msg_id=event.message_id, discord_msg_id=msg_id)
@@ -344,9 +365,19 @@ class Orchestrator:
         if self.qq_adapter is None:
             return
 
+        # 私信消息路由到绑定命令处理器
+        if event.is_private:
+            await self.handle_private_message(event)
+            return
+
+        # 绑定昵称替换
+        author_name = self._resolve_author_display_name(
+            "discord", event.author_id, event.author_name,
+        )
+
         if self._debug:
             preview = _debug_message_preview(event.segments)
-            print(f"[DEBUG] 收到 Discord 消息 | {event.author_name}: {preview}", flush=True)
+            print(f"[DEBUG] 收到 Discord 消息 | {event.author_name} ({author_name}): {preview}", flush=True)
 
         segments, reply_platform, reply_msg_id = _extract_reply_segment(event.segments)
 
@@ -362,7 +393,7 @@ class Orchestrator:
         if reply_platform and reply_msg_id and reply_to is None:
             converted.insert(0, text_segment("[回复消息]"))
 
-        prefix = _build_prefix("Discord", event.author_name)
+        prefix = _build_prefix("Discord", author_name)
 
         _, original_text = self.translator.extract_text_segments(converted) if self.translator else ("", "")
         original_text = original_text.strip()
@@ -406,7 +437,7 @@ class Orchestrator:
                     translated = None
 
             if translated is not None:
-                new_prefix = text_segment(f"{event.author_name}：{translated}\n└─ ")
+                new_prefix = text_segment(f"{author_name}：{translated}\n└─ ")
                 segments_to_send = [new_prefix] + converted
             else:
                 if self._debug:
@@ -426,7 +457,7 @@ class Orchestrator:
             if msg_id:
                 print(f"[DEBUG] 发送到 QQ 成功 | message_id={msg_id}", flush=True)
             else:
-                print(f"[DEBUG] 发送到 QQ 失败 | {event.author_name}", flush=True)
+                print(f"[DEBUG] 发送到 QQ 失败 | {author_name}", flush=True)
 
     async def _on_translation_complete(self, pending: PendingTranslation) -> None:
         self._pending.pop(pending.event_id, None)
@@ -468,6 +499,340 @@ class Orchestrator:
         discord_adapter.set_on_message(self.handle_discord_message)
         qq_adapter.set_on_message(self.handle_qq_message)
 
+    # ── 私信命令处理（绑定/解绑） ──────────────────────────────
+
+    @staticmethod
+    def _l10n(platform: str, zh: str, en: str) -> str:
+        """根据平台返回中文或英文提示."""
+        return zh if platform == "qq" else en
+
+    async def handle_private_message(self, event: MessageEvent) -> None:
+        """处理私信命令：/bind /unbind /验证码."""
+        text = self._extract_private_text(event.segments)
+        if not text:
+            return
+
+        logger.info(
+            "Private message from %s:%s: %s",
+            event.platform, event.author_id, text[:80],
+        )
+
+        if text.startswith("/bind"):
+            await self._handle_bind_command(event, text)
+        elif text.startswith("/unbind"):
+            await self._handle_unbind_command(event)
+        elif text.strip().isdigit() and 4 <= len(text.strip()) <= 6:
+            await self._handle_verification_reply(event, text.strip())
+        else:
+            logger.info("Unknown private command from %s:%s: %s", event.platform, event.author_id, text[:50])
+
+    def _extract_private_text(self, segments: list[MessageSegment]) -> str:
+        """从私信消息段中提取纯文本内容."""
+        parts: list[str] = []
+        for seg in segments:
+            if seg.type == SEGMENT_TEXT:
+                parts.append(seg.data.get("text", ""))
+        return "".join(parts).strip()
+
+    async def _handle_bind_command(self, event: MessageEvent, text: str) -> None:
+        """处理 /bind 命令."""
+        p = event.platform
+        # 解析目标平台和标识符
+        target_platform, target_identifier = self._parse_bind_target(text, from_platform=p)
+        if target_platform is None or not target_identifier:
+            logger.warning(
+                "Invalid bind format from %s:%s: %s",
+                p, event.author_id, text,
+            )
+            await self._send_private_reply(
+                p, event.author_id,
+                self._l10n(p,
+                    "格式错误。请使用：\n"
+                    "  /bind <QQ号>   (从 Discord 私信)",
+                    # "  /bind <用户名>  (从 QQ 私信)",  # ── 已禁用 ──
+                    "Invalid format. Use:\n"
+                    "  /bind <QQ number>   (from Discord DM)",
+                    # "  /bind <username>  (from QQ)",  # ── 已禁用 ──
+                ),
+            )
+            return
+
+        # 在目标平台成员缓存中查找用户
+        target_user_id = self._resolve_target_user(target_platform, target_identifier)
+        if target_user_id is None:
+            logger.warning(
+                "Bind target not found: %s:%s → %s:%s",
+                p, event.author_id,
+                target_platform, target_identifier,
+            )
+            await self._send_private_reply(
+                p, event.author_id,
+                self._l10n(p,
+                    f"在 {target_platform.upper()} 中未找到「{target_identifier}」。"
+                    f"请确认用户名正确，或 Bot 的成员缓存已刷新（等待 5 分钟）。",
+                    f"User «{target_identifier}» not found on {target_platform.upper()}.\n"
+                    f"Make sure the name is correct and the member cache is refreshed (wait ~5 min).",
+                ),
+            )
+            return
+
+        async with self._bind_lock:
+            # 检查是否已绑定（在锁内，防止并发绑定导致状态不一致）
+            if self._bind_manager.is_bound(p, event.author_id):
+                logger.warning(
+                    "Bind rejected: source already bound %s:%s",
+                    p, event.author_id,
+                )
+                await self._send_private_reply(
+                    p, event.author_id,
+                    self._l10n(p,
+                        "你的账号已绑定，请先使用 /unbind 解绑。",
+                        "Your account is already bound. Use /unbind first.",
+                    ),
+                )
+                return
+            if self._bind_manager.is_bound(target_platform, target_user_id):
+                logger.warning(
+                    "Bind rejected: target already bound %s:%s",
+                    target_platform, target_user_id,
+                )
+                await self._send_private_reply(
+                    p, event.author_id,
+                    self._l10n(p,
+                        f"该 {target_platform.upper()} 账号已绑定到其他用户，请先解绑。",
+                        f"This {target_platform.upper()} account is already bound to another user.",
+                    ),
+                )
+                return
+
+            # 生成验证码并发送到目标平台
+            code = self._verification_manager.create(
+                source_platform=p,
+                source_user_id=event.author_id,
+                target_platform=target_platform,
+                target_user_id=target_user_id,
+            )
+
+        sent = await self._send_verification_code(target_platform, target_user_id, code)
+        if sent:
+            logger.info(
+                "Verification code sent: %s:%s → %s:%s (code=%s)",
+                p, event.author_id,
+                target_platform, target_user_id, code,
+            )
+            await self._send_private_reply(
+                p, event.author_id,
+                self._l10n(p,
+                    f"验证码已发送到 {target_platform.upper()} 用户「{target_identifier}」。"
+                    f"请回复该验证码完成绑定。⏳ 5 分钟内有效",
+                    f"Verification code sent to {target_platform.upper()} user «{target_identifier}».\n"
+                    f"Reply with the code to complete binding. ⏳ Valid for 5 minutes",
+                ),
+            )
+        else:
+            logger.error(
+                "Failed to send verification code: %s:%s → %s:%s",
+                p, event.author_id,
+                target_platform, target_user_id,
+            )
+            self._verification_manager.cancel(p, event.author_id)
+            await self._send_private_reply(
+                p, event.author_id,
+                self._l10n(p,
+                    f"无法向 {target_platform.upper()} 用户发送私信。"
+                    f"请确保对方已开启私信接收。",
+                    f"Failed to send DM to {target_platform.upper()} user.\n"
+                    f"Make sure they have DMs enabled.",
+                ),
+            )
+
+    async def _handle_unbind_command(self, event: MessageEvent) -> None:
+        """处理 /unbind 命令."""
+        p = event.platform
+        self._verification_manager.cancel(p, event.author_id)
+        if self._bind_manager.unbind(p, event.author_id):
+            logger.info("Unbind successful: %s:%s", p, event.author_id)
+            await self._send_private_reply(
+                p, event.author_id,
+                self._l10n(p, "已解绑 ✅", "Unbound ✅"),
+            )
+        else:
+            logger.info(
+                "Unbind attempt for unbounded user: %s:%s",
+                p, event.author_id,
+            )
+            await self._send_private_reply(
+                p, event.author_id,
+                self._l10n(p,
+                    "你尚未绑定任何账号。使用 /bind 命令开始绑定。",
+                    "You haven't bound any account yet. Use /bind to get started.",
+                ),
+            )
+
+    async def _handle_verification_reply(self, event: MessageEvent, code: str) -> None:
+        """处理验证码回复."""
+        p = event.platform
+        async with self._bind_lock:
+            result = self._verification_manager.verify(
+                source_platform=p,
+                source_user_id=event.author_id,
+                code=code,
+            )
+            if result is None:
+                logger.warning(
+                    "Verification failed for %s:%s (wrong/expired code)",
+                    p, event.author_id,
+                )
+                await self._send_private_reply(
+                    p, event.author_id,
+                    self._l10n(p,
+                        "验证码错误或已过期，请重新发送 /bind 命令。",
+                        "Invalid or expired code. Please send /bind again.",
+                    ),
+                )
+                return
+
+            target_platform, target_user_id = result
+
+            try:
+                self._bind_manager.bind(
+                    qq_id=event.author_id if p == "qq" else target_user_id,
+                    discord_id=event.author_id if p == "discord" else target_user_id,
+                )
+            except BindError as e:
+                logger.error(
+                    "Bind failed during verification: %s:%s ↔ %s:%s - %s",
+                    p, event.author_id,
+                    target_platform, target_user_id, e,
+                )
+                await self._send_private_reply(
+                    p, event.author_id,
+                    self._l10n(p,
+                        f"绑定失败：{e}",
+                        f"Bind failed: {e}",
+                    ),
+                )
+                return
+
+            logger.info(
+                "Bind successful: %s:%s ↔ %s:%s",
+                p, event.author_id,
+                target_platform, target_user_id,
+            )
+            await self._send_private_reply(
+                p, event.author_id,
+                self._l10n(p,
+                    "绑定成功 🎉 现在跨平台转发时会自动 @ 对方并使用绑定后的名称。",
+                    "Binding successful 🎉 Messages will now auto-@ the bound user and show the bound name.",
+                ),
+            )
+
+    def _parse_bind_target(self, text: str, from_platform: str = "discord") -> tuple[str | None, str]:
+        """解析 /bind 命令的目标平台和标识符.
+
+        Args:
+            text: 命令文本
+            from_platform: 发起绑定的平台 ("qq" 或 "discord")
+
+        Returns:
+            (platform, identifier) or (None, "") 如果格式无效.
+        """
+        m = BIND_COMMAND_RE.match(text)
+        if not m:
+            return None, ""
+        rest = text[m.end():].strip()
+        if not rest:
+            return None, ""
+
+        # 支持 "<QQ号>" 或 "<用户名>" 格式（也兼容 "QQ:xxx" / "Discord:xxx"）
+        if ":" in rest:
+            platform_part, _, identifier = rest.partition(":")
+            platform_part = platform_part.strip().lower()
+            identifier = identifier.strip()
+            if platform_part in ("qq", "discord"):
+                return platform_part, identifier
+            return None, ""
+
+        # 从 Discord 发起时，纯数字视为 QQ 号
+        if rest.isdigit() and from_platform == "discord":
+            return "qq", rest
+
+        # 从 QQ 发起时或非数字，当作 Discord 用户名
+        # ── 已禁用：QQ→Discord 昵称绑定功能（PR review 要求移除） ──
+        # if from_platform == "qq":
+        #     return "discord", rest
+        # return "discord", rest
+        return None, ""
+
+    def _resolve_target_user(self, platform: str, identifier: str) -> str | None:
+        """在目标平台成员缓存中查找用户.
+
+        Returns:
+            用户 ID，或 None（未找到）.
+        """
+        if self.matcher is None:
+            return None
+        # 优先按显示名称精确/模糊匹配
+        result = self.matcher.match_user(identifier, platform)
+        if result is not None:
+            user_id, _ = result
+            return user_id
+        # 按显示名称未找到时，尝试按用户 ID 直接查找（应对 QQ 号等纯数字标识符）
+        if self.matcher.has_user(platform, identifier):
+            return identifier
+        return None
+
+    async def _send_verification_code(
+        self, platform: str, user_id: str, code: str,
+    ) -> bool:
+        """向目标平台的用户发送验证码私信（双语）. """
+        message = (
+            f"你收到了一个跨平台绑定请求。\n"
+            f"验证码：{code}\n"
+            f"请将验证码回复给发起绑定的 Bot 私信以完成绑定。\n"
+            f"验证码 5 分钟内有效。\n"
+            f"\n"
+            f"---\n"
+            f"You have received a cross-platform binding request.\n"
+            f"Code: {code}\n"
+            f"Reply this code to the bot who initiated the binding.\n"
+            f"Valid for 5 minutes."
+        )
+        if platform == "qq" and self.qq_adapter is not None:
+            return await self.qq_adapter.send_private_msg(int(user_id), message)
+        if platform == "discord" and self.discord_adapter is not None:
+            return await self.discord_adapter.send_dm(user_id, message)
+        return False
+
+    async def _send_private_reply(self, platform: str, user_id: str, text: str) -> None:
+        """向用户发送私信回复."""
+        logger.debug(
+            "Sending private reply to %s:%s: %.100s",
+            platform, user_id, text,
+        )
+        if platform == "qq" and self.qq_adapter is not None:
+            await self.qq_adapter.send_private_msg(int(user_id), text)
+        elif platform == "discord" and self.discord_adapter is not None:
+            await self.discord_adapter.send_dm(user_id, text)
+
+    # ── 绑定感知的昵称解析 ──────────────────────────────────
+
+    def _resolve_author_display_name(
+        self, platform: str, author_id: str, original_name: str,
+    ) -> str:
+        """如果用户已绑定，返回绑定后的平台名称；否则返回原名称."""
+        if self._bind_manager is None:
+            return original_name
+        counterpart_id = self._bind_manager.get_counterpart(platform, author_id)
+        if counterpart_id is None:
+            return original_name
+        # 从缓存中查找绑定后的显示名
+        if self.matcher is not None:
+            target_platform = "discord" if platform == "qq" else "qq"
+            bound_name = self.matcher.get_display_name(target_platform, counterpart_id)
+            if bound_name:
+                return bound_name
+        return original_name
     def _build_name_regex(self, target_platform: str) -> re.Pattern | None:
         """为平台构建一次性匹配所有 display_name 的正则，按名字长度降序。"""
         if self.matcher is None:
@@ -528,6 +893,7 @@ class Orchestrator:
     ) -> list[MessageSegment]:
         if self.matcher is None:
             return segments
+        source_platform = "qq" if target_platform == "discord" else "discord"
         result: list[MessageSegment] = []
 
         for seg in segments:
@@ -566,6 +932,14 @@ class Orchestrator:
             for start, end, name, uid, dn, is_full in entries:
                 if start > last_end:
                     result.append(text_segment(text[last_end:start]))
+                name = match.group(1)
+
+                # 优先查绑定：在 source 平台中找 @name 对应的用户，看是否有绑定
+                bound_target = self._resolve_text_mention_via_binding(name, source_platform, target_platform)
+                if bound_target is not None:
+                    user_id, display_name = bound_target
+                    if self._debug:
+                        print(f"[DEBUG] 文本 @{name} -> 绑定匹配 {target_platform} 用户 {display_name} ({user_id})", flush=True)
 
                 if is_full:
                     # 全名匹配直接使用缓存中的用户信息
@@ -590,14 +964,44 @@ class Orchestrator:
                     else:
                         result.append(at_segment("qq", final_id, final_display))
                 else:
-                    result.append(text_segment(f"@{name}"))
-
+                    # 回退到名称匹配
+                    matched = self.matcher.match_user(name, target_platform)
+                    if matched is not None:
+                        user_id, display_name = matched
+                        if self._debug:
+                            print(f"[DEBUG] 文本 @{name} -> 名称匹配 {target_platform} 用户 {display_name} ({user_id})", flush=True)
+                        if target_platform == "discord":
+                            result.append(text_segment(f"<@{user_id}>"))
+                        else:
+                            result.append(at_segment("qq", user_id, display_name))
+                    else:
+                        if self._debug:
+                            print(f"[DEBUG] 文本 @{name} -> 未在 {target_platform} 中找到匹配", flush=True)
+                        result.append(text_segment(f"@{name}"))
                 last_end = end
 
             if last_end < len(text):
                 result.append(text_segment(text[last_end:]))
 
         return result
+
+    def _resolve_text_mention_via_binding(
+        self, name: str, source_platform: str, target_platform: str,
+    ) -> tuple[str, str] | None:
+        """通过绑定关系解析文本 @ 提及.
+
+        在 source 平台缓存中查找名为 name 的用户，
+        如果该用户有绑定，返回 target 平台的 (user_id, display_name).
+        """
+        if self.matcher is None or self._bind_manager is None:
+            return None
+        candidates = self.matcher.search_users_by_display(name, source_platform)
+        for source_user_id, _ in candidates:
+            bound_id = self._bind_manager.get_counterpart(source_platform, source_user_id)
+            if bound_id is not None:
+                target_display = self.matcher.get_display_name(target_platform, bound_id) or bound_id
+                return bound_id, target_display
+        return None
 
     async def start(self) -> None:
         tasks = []
@@ -627,7 +1031,7 @@ class Orchestrator:
                         dc_count = len(self.matcher._cache.get("discord", {}))
                         print(f"[DEBUG] 缓存刷新: Discord 成员数={dc_count}", flush=True)
                 except Exception:
-                    pass
+                    logger.warning("Failed to refresh Discord member cache", exc_info=True)
             if self.qq_adapter is not None and self.matcher is not None:
                 try:
                     await self.matcher.refresh_cache(
@@ -637,7 +1041,7 @@ class Orchestrator:
                         qq_count = len(self.matcher._cache.get("qq", {}))
                         print(f"[DEBUG] 缓存刷新: QQ 成员数={qq_count}", flush=True)
                 except Exception:
-                    pass
+                    logger.warning("Failed to refresh QQ member cache", exc_info=True)
             await asyncio.sleep(300)
 
     async def _heartbeat_loop(self) -> None:
@@ -685,9 +1089,9 @@ class Orchestrator:
             try:
                 await self.discord_adapter.stop()
             except Exception:
-                pass
+                logger.warning("Error stopping Discord adapter", exc_info=True)
         if self.qq_adapter is not None:
             try:
                 await self.qq_adapter.stop()
             except Exception:
-                pass
+                logger.warning("Error stopping QQ adapter", exc_info=True)

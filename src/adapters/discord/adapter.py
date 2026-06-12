@@ -105,6 +105,11 @@ class _DiscordClient(discord.Client):
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
             return
+        # DM 私信 → 路由到私信处理器
+        if isinstance(message.channel, discord.DMChannel):
+            await self._adapter._on_discord_dm(message)
+            return
+        # 群组频道 → 只处理配置的频道
         if str(message.channel.id) != self._adapter._channel_id:
             return
         # 补发期间阻塞常规转发，防止消息错乱
@@ -242,6 +247,26 @@ class DiscordAdapter(PlatformAdapter):
         except Exception:
             logger.exception("Failed to send Discord message")
             return None
+
+    async def send_dm(self, user_id: str, content: str) -> bool:
+        """向 Discord 用户发送私信.
+
+        Args:
+            user_id: Discord 用户 ID
+            content: 消息文本
+
+        Returns:
+            发送成功返回 True，否则 False.
+        """
+        try:
+            user = await self._client.fetch_user(int(user_id))
+            dm_channel = await user.create_dm()
+            await dm_channel.send(content=content)
+            logger.info("DM sent to Discord user %s", user_id)
+            return True
+        except Exception:
+            logger.exception("Failed to send DM to Discord user %s", user_id)
+            return False
 
     async def _try_attach_file(
         self,
@@ -424,10 +449,42 @@ class DiscordAdapter(PlatformAdapter):
         )
         await self._trigger_on_message(event)
 
+        await self._trigger_on_message(event)
+
         # 记录最后处理的 Discord 消息 ID（Snowflake，可直接按数值比较）
         if self._last_processed_id is None or int(msg_id_str) > int(self._last_processed_id):
             self._last_processed_id = msg_id_str
             self._save_last_processed_id(msg_id_str)
+
+    async def _on_discord_dm(self, message: discord.Message) -> None:
+        """处理 Discord 私信消息."""
+        segments: list[MessageSegment] = []
+
+        if message.content:
+            # 私信中只解析纯文本，不需要 @ 和 emoji 解析
+            segments.append(text_segment(message.content))
+
+        for attachment in message.attachments:
+            segments.append(
+                MessageSegment(type=SEGMENT_IMAGE, data={"file": attachment.url})
+            )
+
+        logger.info(
+            "Private message from Discord user %s (%s)",
+            message.author.id, message.author.display_name,
+        )
+
+        event = MessageEvent(
+            message_id=str(message.id),
+            platform="discord",
+            channel_id="",
+            author_id=str(message.author.id),
+            author_name=message.author.display_name,
+            segments=segments,
+            timestamp=message.created_at,
+            is_private=True,
+        )
+        await self._trigger_on_message(event)
 
     @staticmethod
     def _segments_to_string(segments: list[Any]) -> str:
