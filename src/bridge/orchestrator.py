@@ -178,12 +178,13 @@ class Orchestrator:
             "qq", event.author_id, event.author_name,
         )
 
-        # 已绑定用户：作者前缀用 <@discord_id> 静默提及格式
+        # 已绑定用户：作者前缀用 @Discord昵称 格式（纯文本，不触发通知）
         author_prefix: str | None = None
         if self._bind_manager is not None:
             bound_discord_id = self._bind_manager.get_counterpart("qq", event.author_id)
             if bound_discord_id is not None:
-                author_prefix = f"<@{bound_discord_id}>"
+                bound_display = self.matcher.get_display_name("discord", bound_discord_id) if self.matcher else None
+                author_prefix = f"@{bound_display or bound_discord_id}: "
 
         if self._debug:
             preview = _debug_message_preview(event.segments)
@@ -340,7 +341,7 @@ class Orchestrator:
 
             if translated is not None:
                 if author_prefix:
-                    text = f"{author_prefix}: {translated}"
+                    text = f"{author_prefix}{translated}"
                 else:
                     text = f"`{author_name}`: {translated}"
                 if original_text:
