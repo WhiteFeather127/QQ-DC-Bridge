@@ -77,6 +77,7 @@ async def main() -> None:
         token=config.discord.token,
         channel_id=dc_channel_id,
         proxy=config.discord.proxy,
+        data_dir=config.bridge.data_dir,
     )
 
     qq_adapter = QQAdapter(
