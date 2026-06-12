@@ -772,12 +772,20 @@ class Orchestrator:
         """
         if self.matcher is None:
             return None
-        # 优先按显示名称精确/模糊匹配
+
+        # 纯数字标识符（如 QQ 号）应直接按 user_id 查找，跳过显示名称匹配
+        if identifier.isdigit() and platform == "qq":
+            if self.matcher.has_user(platform, identifier):
+                return identifier
+            return None
+
+        # 非数字标识符，先按显示名称精确/模糊匹配
         result = self.matcher.match_user(identifier, platform)
         if result is not None:
             user_id, _ = result
             return user_id
-        # 按显示名称未找到时，尝试按用户 ID 直接查找（应对 QQ 号等纯数字标识符）
+
+        # 仍未找到时，尝试按 user_id 直接查找（用于特殊场景）
         if self.matcher.has_user(platform, identifier):
             return identifier
         return None
