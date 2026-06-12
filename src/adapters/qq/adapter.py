@@ -382,20 +382,23 @@ class QQAdapter(PlatformAdapter):
             result = await self._ws_api_call(
                 "send_private_msg",
                 user_id=user_id,
+                group_id=self._group_id,
                 message=message,
             )
             if result is None:
                 logger.warning("send_private_msg returned None for user %s", user_id)
                 return False
             data = result.get("data") if isinstance(result, dict) else None
-            success = data is not None or result.get("status") == "ok"
+            status = result.get("status")
+            success = data is not None or status == "ok"
             if success:
                 logger.info("Private message sent to QQ user %s", user_id)
             else:
                 logger.warning(
-                    "send_private_msg response unexpected: %s", result,
+                    "send_private_msg failed for user %s: status=%s data=%s",
+                    user_id, status, data,
                 )
-            return success
+            return bool(success)
         except Exception:
             logger.exception("Failed to send private message to QQ user %s", user_id)
             return False

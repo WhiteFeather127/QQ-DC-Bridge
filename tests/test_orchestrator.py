@@ -783,8 +783,7 @@ class TestHandleBindCommand:
         mock_discord_adapter.send_dm = AsyncMock(return_value=True)
         mock_qq_adapter.send_private_msg = AsyncMock(return_value=True)
         matcher = MagicMock(spec=UserMatcher)
-        matcher.match_user = MagicMock(return_value=("10001", "QQUser"))
-        matcher.has_user = MagicMock(return_value=False)
+        matcher.has_user = MagicMock(return_value=True)
 
         orch = Orchestrator(bridge_config, mock_message_store)
         orch.discord_adapter = mock_discord_adapter
@@ -981,8 +980,7 @@ class TestHandleVerificationReply:
         mock_discord_adapter.send_dm = AsyncMock(return_value=True)
         mock_qq_adapter.send_private_msg = AsyncMock(return_value=True)
         matcher = MagicMock(spec=UserMatcher)
-        matcher.match_user = MagicMock(return_value=("20001", "QQUser"))
-        matcher.has_user = MagicMock(return_value=False)
+        matcher.has_user = MagicMock(return_value=True)
 
         orch = Orchestrator(bridge_config, mock_message_store)
         orch.discord_adapter = mock_discord_adapter

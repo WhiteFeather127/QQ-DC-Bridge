@@ -767,17 +767,11 @@ class Orchestrator:
     def _resolve_target_user(self, platform: str, identifier: str) -> str | None:
         """在目标平台成员缓存中查找用户.
 
-        Returns:
-            用户 ID，或 None（未找到）.
+        调用方保证 identifier 即为平台用户 ID（如 QQ 号），
+        直接通过成员缓存检查用户是否在群内即可。
         """
         if self.matcher is None:
             return None
-        # 优先按显示名称精确/模糊匹配
-        result = self.matcher.match_user(identifier, platform)
-        if result is not None:
-            user_id, _ = result
-            return user_id
-        # 按显示名称未找到时，尝试按用户 ID 直接查找（应对 QQ 号等纯数字标识符）
         if self.matcher.has_user(platform, identifier):
             return identifier
         return None
