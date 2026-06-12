@@ -139,16 +139,13 @@ class UserMatcher:
         def qq_to_discord(segment: MessageSegment, context: Any) -> MessageSegment | None:
             user_id = segment.data.get("user_id", "")
             display = segment.data.get("display", "")
-            # 1. 优先查绑定 → 静默提及 <@id>（不通知）
+            # 优先查绑定
             result = matcher.resolve_mention("qq", user_id, "discord")
             if result is not None:
                 target_id, display_name = result
                 return text_segment(f"<@{target_id}>")
-            # 2. 无绑定 → 在 Discord 缓存中按显示名称查找，找到则用 <@!id>（通知提醒）
+            # 无绑定 → 原有行为
             qq_display_name = matcher._resolve_qq_display_name(user_id) or display or user_id
-            discord_id = matcher.exact_match(qq_display_name, "discord")
-            if discord_id:
-                return text_segment(f"<@!{discord_id}>")
             return text_segment(f"@{qq_display_name}")
 
         def discord_to_qq(segment: MessageSegment, context: Any) -> MessageSegment | None:

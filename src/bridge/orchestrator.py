@@ -178,6 +178,13 @@ class Orchestrator:
             "qq", event.author_id, event.author_name,
         )
 
+        # 已绑定用户：作者前缀用 <@discord_id> 静默提及格式
+        author_prefix: str | None = None
+        if self._bind_manager is not None:
+            bound_discord_id = self._bind_manager.get_counterpart("qq", event.author_id)
+            if bound_discord_id is not None:
+                author_prefix = f"<@{bound_discord_id}>"
+
         if self._debug:
             preview = _debug_message_preview(event.segments)
             print(f"[DEBUG] 收到 QQ 消息 | {event.author_name} ({author_name}): {preview}", flush=True)
@@ -332,7 +339,10 @@ class Orchestrator:
                     translated = None
 
             if translated is not None:
-                text = f"`{author_name}`: {translated}"
+                if author_prefix:
+                    text = f"{author_prefix}: {translated}"
+                else:
+                    text = f"`{author_name}`: {translated}"
                 if original_text:
                     text += "\n-# └─ " + original_text.replace("\n", "\n-# ")
                 # 过滤掉文本段（已被翻译替代），保留非文本段（图片、贴纸等）
@@ -340,10 +350,10 @@ class Orchestrator:
                 segments_to_send = [text_segment(text)] + non_text_segments
             else:
                 # 翻译失败或与原文相同，走原文转发路径
-                prefix = text_segment(f"`{author_name}`: ")
+                prefix = text_segment(author_prefix or f"`{author_name}`: ")
                 segments_to_send = [prefix] + converted
         else:
-            prefix = text_segment(f"`{author_name}`: ")
+            prefix = text_segment(author_prefix or f"`{author_name}`: ")
             segments_to_send = [prefix] + converted
 
         msg_id = await self.discord_adapter.send_message(
@@ -923,48 +933,54 @@ class Orchestrator:
 
             # ── 逐一解析并构建结果 ──
             last_end = 0
-            for start, end, mention_name, uid, dn, is_full in entries:
+            for start, end, name, uid, dn, is_full in entries:
                 if start > last_end:
                     result.append(text_segment(text[last_end:start]))
 
-                # 1. 优先查绑定：有绑定 → 静默提及 <@id>（不通知）
-                bound_target = self._resolve_text_mention_via_binding(
-                    mention_name, source_platform, target_platform,
-                )
+                # 优先查绑定：在 source 平台中找 @name 对应的用户，看是否有绑定
+                bound_target = self._resolve_text_mention_via_binding(name, source_platform, target_platform)
                 if bound_target is not None:
-                    bid, bdisplay = bound_target
+                    user_id, display_name = bound_target
                     if self._debug:
-                        print(f"[DEBUG] 文本 @{mention_name} -> 绑定匹配 {target_platform} 用户 {bdisplay} ({bid})", flush=True)
-                    if target_platform == "discord":
-                        result.append(text_segment(f"<@{bid}>"))
-                    else:
-                        result.append(at_segment("qq", bid, bdisplay))
-                    last_end = end
-                    continue
+                        print(f"[DEBUG] 文本 @{name} -> 绑定匹配 {target_platform} 用户 {display_name} ({user_id})", flush=True)
 
-                # 2. 无绑定 → 按名称匹配，用 <@!id>（通知提醒）
                 if is_full:
-                    matched_id, matched_display = uid, dn  # type: ignore[misc]
+                    # 全名匹配直接使用缓存中的用户信息
+                    final_id, final_display = uid, dn  # type: ignore[misc]
                     if self._debug:
-                        print(f"[DEBUG] 文本 @{mention_name} -> 全名匹配 {target_platform} 用户 {matched_display} ({matched_id})", flush=True)
+                        print(f"[DEBUG] 文本 @{name} -> 全名匹配 {target_platform} 用户 {final_display} ({final_id})", flush=True)
                 else:
-                    matched = self.matcher.match_user(mention_name, target_platform)
+                    # 正则匹配，尝试名称匹配
+                    matched = self.matcher.match_user(name, target_platform)
                     if matched is not None:
-                        matched_id, matched_display = matched
+                        final_id, final_display = matched
                         if self._debug:
-                            print(f"[DEBUG] 文本 @{mention_name} -> 名称匹配 {target_platform} 用户 {matched_display} ({matched_id})", flush=True)
+                            print(f"[DEBUG] 文本 @{name} -> 名称匹配 {target_platform} 用户 {final_display} ({final_id})", flush=True)
                     else:
-                        matched_id = matched_display = None
+                        final_id, final_display = None, None
+                        if self._debug:
+                            print(f"[DEBUG] 文本 @{name} -> 未在 {target_platform} 中找到匹配", flush=True)
 
-                if matched_id is not None:
+                if final_id is not None:
                     if target_platform == "discord":
-                        result.append(text_segment(f"<@!{matched_id}>"))
+                        result.append(text_segment(f"<@{final_id}>"))
                     else:
-                        result.append(at_segment("qq", matched_id, matched_display))
+                        result.append(at_segment("qq", final_id, final_display))
                 else:
-                    if self._debug:
-                        print(f"[DEBUG] 文本 @{mention_name} -> 未在 {target_platform} 中找到匹配", flush=True)
-                    result.append(text_segment(f"@{mention_name}"))
+                    # 回退到名称匹配
+                    matched = self.matcher.match_user(name, target_platform)
+                    if matched is not None:
+                        user_id, display_name = matched
+                        if self._debug:
+                            print(f"[DEBUG] 文本 @{name} -> 名称匹配 {target_platform} 用户 {display_name} ({user_id})", flush=True)
+                        if target_platform == "discord":
+                            result.append(text_segment(f"<@{user_id}>"))
+                        else:
+                            result.append(at_segment("qq", user_id, display_name))
+                    else:
+                        if self._debug:
+                            print(f"[DEBUG] 文本 @{name} -> 未在 {target_platform} 中找到匹配", flush=True)
+                        result.append(text_segment(f"@{name}"))
                 last_end = end
 
             if last_end < len(text):
