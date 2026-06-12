@@ -199,6 +199,7 @@ class DiscordAdapter(PlatformAdapter):
         channel_id: str,
         segments: list[Any],
         reply_to: str | None = None,
+        allowed_mentions: discord.AllowedMentions | None = None,
     ) -> str | None:
         try:
             channel = self._client.get_channel(int(channel_id))
@@ -238,6 +239,8 @@ class DiscordAdapter(PlatformAdapter):
                 kwargs["files"] = files
             if reply_to is not None:
                 kwargs["reference"] = channel.get_partial_message(int(reply_to))
+            if allowed_mentions is not None:
+                kwargs["allowed_mentions"] = allowed_mentions
 
             if not kwargs:
                 return None
