@@ -30,6 +30,7 @@ from bridge.verification import VerificationManager
 
 MENTION_TEXT_RE = re.compile(r"@([^\s]+)")
 BIND_COMMAND_RE = re.compile(r"^/bind\s+")
+SOURCE_COMMAND_RE = re.compile(r"^/source\s*$", re.IGNORECASE)
 
 if TYPE_CHECKING:
     from adapters.base import MessageEvent, PlatformAdapter
@@ -105,6 +106,8 @@ def _normalize_text(text: str) -> str:
     normalized = unicodedata.normalize('NFKC', text)
     return ''.join(normalized.split()).casefold()
 
+
+DISCORD_MAX_LENGTH = 2000
 
 _MD5_HEX_RE = re.compile(r'^([0-9a-fA-F]{32})')
 
@@ -205,6 +208,28 @@ class Orchestrator:
             if resolved:
                 has_bot_reply = True
                 reply_to = resolved
+
+        # 检测 /source 命令：回复已转发的消息时查看原文
+        if has_bot_reply and reply_to is not None:
+            text = "".join(
+                seg.data.get("text", "")
+                for seg in segments if seg.type == SEGMENT_TEXT
+            ).strip()
+            if SOURCE_COMMAND_RE.match(text):
+                original = self._message_store.get_original_text(reply_to)
+                if original:
+                    await self.qq_adapter.send_message(
+                        self._qq_group_id,
+                        [text_segment(original)],
+                        reply_to=reply_msg_id,
+                    )
+                else:
+                    await self.qq_adapter.send_message(
+                        self._qq_group_id,
+                        [text_segment("没有找到原文")],
+                        reply_to=reply_msg_id,
+                    )
+                return
 
         if not has_bot_mention and not has_bot_reply:
             if self._debug:
@@ -332,17 +357,24 @@ class Orchestrator:
                     translated = None
 
             if translated is not None:
-                text = f"`{author_name}`: {translated}"
-                if original_text:
-                    text += "\n-# └─ " + original_text.replace("\n", "\n-# ")
-                # 过滤掉文本段（已被翻译替代），保留非文本段（图片、贴纸等）
+                prefix = f"`{author_name}`: "
                 non_text_segments = [seg for seg in converted if seg.type != SEGMENT_TEXT]
-                segments_to_send = [text_segment(text)] + non_text_segments
+                if original_text and len(original_text) > 200:
+                    orig_text = prefix + original_text
+                    segments_to_send = [text_segment(prefix + translated)] + non_text_segments
+                else:
+                    orig_text = None
+                    text = prefix + translated
+                    if original_text:
+                        text += "\n-# └─ " + original_text.replace("\n", "\n-# ")
+                    segments_to_send = [text_segment(text)] + non_text_segments
             else:
                 # 翻译失败或与原文相同，走原文转发路径
+                orig_text = None
                 prefix = text_segment(f"`{author_name}`: ")
                 segments_to_send = [prefix] + converted
         else:
+            orig_text = None
             prefix = text_segment(f"`{author_name}`: ")
             segments_to_send = [prefix] + converted
 
@@ -350,6 +382,7 @@ class Orchestrator:
             self._discord_channel_id,
             segments_to_send,
             reply_to=reply_to,
+            original_text=orig_text,
         )
         if msg_id is None:
             if self._debug:
@@ -437,8 +470,18 @@ class Orchestrator:
                     translated = None
 
             if translated is not None:
-                new_prefix = text_segment(f"{author_name}：{translated}\n└─ ")
-                segments_to_send = [new_prefix] + converted
+                if len(original_text) > 200:
+                    self._message_store.store_original_text(
+                        event.message_id, original_text,
+                    )
+                    non_text_segments = [
+                        seg for seg in converted if seg.type != SEGMENT_TEXT
+                    ]
+                    hint = text_segment("\n\n[原文过长，回复 /source 查看原文]")
+                    segments_to_send = [text_segment(f"{author_name}：{translated}"), hint] + non_text_segments
+                else:
+                    new_prefix = text_segment(f"{author_name}：{translated}\n└─ ")
+                    segments_to_send = [new_prefix] + converted
             else:
                 if self._debug:
                     print(f"[DEBUG] 翻译失败，仅发送原文", flush=True)
@@ -472,7 +515,12 @@ class Orchestrator:
             # └─ Chinese original text
             text = f"`{pending.author_name}`: {pending.translated_text}"
             if pending.original_text:
-                text += "\n-# └─ " + pending.original_text.replace("\n", "\n-# ")
+                original = pending.original_text.replace("\n", "\n-# ")
+                # 编辑时无法分页，截断以适配 Discord 限制
+                max_original = DISCORD_MAX_LENGTH - len(text) - 20
+                if len(original) > max_original:
+                    original = original[:max_original] + "\n-# …(截断)"
+                text += "\n-# └─ " + original
             # 仅编辑文本，图片已在原始消息中以附件形式发送
             new_segments = [text_segment(text)]
 

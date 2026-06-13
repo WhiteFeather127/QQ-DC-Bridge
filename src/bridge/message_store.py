@@ -10,6 +10,7 @@ class MessageStore:
         self._base_dir = Path(data_dir) / "message_store"
         self._qq_to_discord: dict[str, str] = {}
         self._discord_to_qq: dict[str, str] = {}
+        self._original_texts: dict[str, str] = {}
         self._load_all()
 
     @staticmethod
@@ -29,6 +30,8 @@ class MessageStore:
                 raw = data.get("qq_to_discord", {})
                 self._qq_to_discord.update(raw)
                 self._discord_to_qq.update({v: k for k, v in raw.items()})
+                raw_orig = data.get("original_texts", {})
+                self._original_texts.update(raw_orig)
             except (json.JSONDecodeError, OSError):
                 continue
 
@@ -37,7 +40,10 @@ class MessageStore:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(
-                {"qq_to_discord": self._qq_to_discord},
+                {
+                    "qq_to_discord": self._qq_to_discord,
+                    "original_texts": self._original_texts,
+                },
                 ensure_ascii=False,
                 indent=2,
             ),
@@ -55,3 +61,13 @@ class MessageStore:
         if platform == "discord":
             return self._discord_to_qq.get(msg_id)
         return None
+
+    def store_original_text(self, discord_msg_id: str, text: str) -> None:
+        self._original_texts[discord_msg_id] = text
+        self._save()
+
+    def get_original_text(self, discord_msg_id: str) -> str | None:
+        return self._original_texts.get(discord_msg_id)
+
+    def get_discord_id_by_qq(self, qq_msg_id: str) -> str | None:
+        return self._qq_to_discord.get(qq_msg_id)

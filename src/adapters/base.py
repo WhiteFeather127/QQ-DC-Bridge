@@ -35,6 +35,8 @@ class PlatformAdapter(ABC):
         channel_id: str,
         segments: list,
         reply_to: str | None = None,
+        pages: list[str] | None = None,
+        original_text: str | None = None,
     ) -> str | None: ...
 
     @abstractmethod

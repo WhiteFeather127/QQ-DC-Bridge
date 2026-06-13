@@ -27,6 +27,7 @@ from bridge.segment.types import (
     text_segment,
 )
 from adapters.base import MessageEvent, PlatformAdapter
+from ui.paginator import ToggleOriginalView
 
 logger = logging.getLogger(__name__)
 
@@ -199,6 +200,8 @@ class DiscordAdapter(PlatformAdapter):
         channel_id: str,
         segments: list[Any],
         reply_to: str | None = None,
+        pages: list[str] | None = None,
+        original_text: str | None = None,
     ) -> str | None:
         try:
             channel = self._client.get_channel(int(channel_id))
@@ -232,12 +235,18 @@ class DiscordAdapter(PlatformAdapter):
             text_content = text_content.strip()
 
             kwargs: dict[str, Any] = {}
-            if text_content:
+            view: discord.ui.View | None = None
+            if original_text:
+                kwargs["content"] = text_content
+                view = ToggleOriginalView(original_text, text_content)
+            elif text_content:
                 kwargs["content"] = text_content
             if files:
                 kwargs["files"] = files
             if reply_to is not None:
                 kwargs["reference"] = channel.get_partial_message(int(reply_to))
+            if view is not None:
+                kwargs["view"] = view
 
             if not kwargs:
                 return None
